@@ -1,32 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
-<androidx.coordinatorlayout.widget.CoordinatorLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<androidx.coordinatorlayout.widget.CoordinatorLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
-    xmlns:tools="http://schemas.android.com/tools"
     android:id="@+id/main"
     android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:fitsSystemWindows="true"
-    tools:context=".FinderActivity">
-
-    <com.google.android.material.appbar.AppBarLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:fitsSystemWindows="true">
-
-        <com.google.android.material.appbar.MaterialToolbar
-            android:id="@+id/toolbar"
-            android:layout_width="match_parent"
-            android:layout_height="?attr/actionBarSize" />
-
-    </com.google.android.material.appbar.AppBarLayout>
+    android:layout_height="match_parent">
 
     <RelativeLayout
+        android:id="@+id/relativeLayout"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:background="@color/black"
-        app:layout_behavior="@string/appbar_scrolling_view_behavior">
+        android:background="@color/black">
 
-        <!-- Camera Preview (future ML/CV feature) -->
+        <!-- Camera Preview -->
         <FrameLayout
             android:id="@+id/cameraPreview"
             android:layout_width="match_parent"
@@ -44,104 +30,105 @@
             android:src="@android:drawable/ic_menu_more"
             android:contentDescription="Menu" />
 
-        <!-- Microphone Button -->
-        <ImageButton
-            android:id="@+id/btnMicrophone"
-            android:layout_width="80dp"
-            android:layout_height="80dp"
-            android:layout_alignParentBottom="true"
-            android:layout_centerHorizontal="true"
-            android:layout_marginBottom="48dp"
-            android:background="@drawable/microphone_outline"
-            android:src="@android:drawable/ic_btn_speak_now"
-            android:contentDescription="Tap to search" />
+        <!-- CENTER ANIMATION AREA -->
+        <FrameLayout
+            android:id="@+id/voiceAnimationContainer"
+            android:layout_width="120dp"
+            android:layout_height="120dp"
+            android:layout_centerInParent="true">
+
+            <!-- Mic Icon (default state) -->
+            <ImageView
+                android:id="@+id/btnMicrophone"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:src="@android:drawable/ic_btn_speak_now"
+                android:tint="@color/white"
+                android:clickable="true"
+                android:focusable="true" />
+
+            <!-- Speaking Animation (hidden by default) -->
+            <LinearLayout
+                android:id="@+id/speakingDots"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center"
+                android:orientation="horizontal"
+                android:visibility="gone">
+
+                <View style="@style/DotStyle"/>
+                <View style="@style/DotStyle"/>
+                <View style="@style/DotStyle"/>
+
+            </LinearLayout>
+
+        </FrameLayout>
 
         <!-- Status Text -->
         <TextView
             android:id="@+id/tvStatus"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_centerInParent="true"
-            android:text="Point camera at the area"
-            android:textSize="20sp"
+            android:layout_centerHorizontal="true"
+            android:layout_above="@id/voiceAnimationContainer"
+            android:layout_marginBottom="24dp"
+            android:text="Listening..."
             android:textColor="@color/white"
-            android:textStyle="bold"
-            android:visibility="gone" />
-
-        <!-- Tutorial Overlay -->
-        <LinearLayout
-            android:id="@+id/tutorialOverlay"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:background="#E6000000"
-            android:orientation="vertical"
-            android:gravity="center"
-            android:padding="32dp"
-            android:clickable="true"
-            android:focusable="true"
-            android:visibility="visible">
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/tutorial_title"
-                android:textSize="28sp"
-                android:textColor="@color/white"
-                android:textStyle="bold"
-                android:gravity="center" />
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="32dp"
-                android:text="@string/tutorial_step1"
-                android:textSize="18sp"
-                android:textColor="@color/gray_light" />
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="16dp"
-                android:text="@string/tutorial_step2"
-                android:textSize="18sp"
-                android:textColor="@color/gray_light" />
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="16dp"
-                android:text="@string/tutorial_step3"
-                android:textSize="18sp"
-                android:textColor="@color/gray_light" />
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="16dp"
-                android:text="@string/tutorial_step4"
-                android:textSize="18sp"
-                android:textColor="@color/gray_light" />
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="48dp"
-                android:text="@string/tap_to_start"
-                android:textSize="20sp"
-                android:textColor="@color/blue_accent"
-                android:textStyle="bold" />
-
-        </LinearLayout>
+            android:textSize="18sp" />
 
     </RelativeLayout>
 
-    <com.google.android.material.floatingactionbutton.FloatingActionButton
-        android:id="@+id/fab"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_gravity="bottom|end"
-        android:layout_marginEnd="@dimen/fab_margin"
-        android:layout_marginBottom="16dp"
-        app:srcCompat="@android:drawable/ic_dialog_email" />
+    <!-- Tutorial Overlay -->
+    <LinearLayout
+        android:id="@+id/tutorialOverlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#E6000000"
+        android:gravity="center"
+        android:orientation="vertical"
+        android:padding="32dp"
+        android:clickable="true"
+        android:focusable="true"
+        android:visibility="visible">
+
+        <TextView
+            android:text="@string/tutorial_title"
+            android:textColor="@color/white"
+            android:textSize="28sp"
+            android:textStyle="bold"
+            android:gravity="center"/>
+
+        <TextView
+            android:layout_marginTop="32dp"
+            android:text="@string/tutorial_step1"
+            android:textColor="@color/gray_light"
+            android:textSize="18sp"/>
+
+        <TextView
+            android:layout_marginTop="16dp"
+            android:text="@string/tutorial_step2"
+            android:textColor="@color/gray_light"
+            android:textSize="18sp"/>
+
+        <TextView
+            android:layout_marginTop="16dp"
+            android:text="@string/tutorial_step3"
+            android:textColor="@color/gray_light"
+            android:textSize="18sp"/>
+
+        <TextView
+            android:layout_marginTop="16dp"
+            android:text="@string/tutorial_step4"
+            android:textColor="@color/gray_light"
+            android:textSize="18sp"/>
+
+        <TextView
+            android:layout_marginTop="48dp"
+            android:text="@string/tap_to_start"
+            android:textColor="@color/blue_accent"
+            android:textSize="20sp"
+            android:textStyle="bold"/>
+
+    </LinearLayout>
 
 </androidx.coordinatorlayout.widget.CoordinatorLayout>

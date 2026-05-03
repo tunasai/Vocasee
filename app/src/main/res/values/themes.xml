@@ -6,4 +6,11 @@
     </style>
 
     <style name="Theme.Vocasee" parent="Base.Theme.Vocasee" />
+
+    <style name="DotStyle">
+        <item name="android:layout_width">12dp</item>
+        <item name="android:layout_height">12dp</item>
+        <item name="android:layout_margin">4dp</item>
+        <item name="android:background">@drawable/dot_circle</item>
+    </style>
 </resources>

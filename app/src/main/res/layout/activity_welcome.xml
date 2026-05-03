@@ -6,93 +6,160 @@
     android:clickable="true"
     android:focusable="true">
 
-    <ScrollView
+    <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="match_parent">
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:gravity="center"
-            android:padding="32dp">
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:gravity="center"
+        android:padding="24dp">
 
         <!-- Logo -->
         <View
-            android:layout_width="120dp"
-            android:layout_height="120dp"
-            android:layout_marginTop="60dp"
+            android:layout_width="80dp"
+            android:layout_height="80dp"
+            android:layout_marginTop="16dp"
             android:background="@drawable/vocasee_logo" />
 
         <!-- Title -->
-
-        <!-- Description -->
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="32dp"
+            android:layout_marginTop="16dp"
             android:gravity="center"
             android:text="@string/welcome_title"
             android:textColor="@color/white"
-            android:textSize="36sp"
+            android:textSize="32sp"
             android:textStyle="bold" />
 
+        <!-- Description -->
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="24dp"
+            android:layout_marginTop="12dp"
             android:text="@string/welcome_description"
-            android:textSize="18sp"
+            android:textSize="14sp"
             android:textColor="@color/gray_light"
-            android:gravity="center" />
+            android:gravity="center"
+            android:lineSpacingMultiplier="1.2" />
 
         <!-- Features Box -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="32dp"
+            android:layout_marginTop="20dp"
+            android:background="@drawable/rounded_box"
             android:orientation="vertical"
-            android:padding="24dp">
+            android:padding="20dp">
 
+            <!-- Title -->
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="Key Features:"
-                android:textSize="22sp"
+                android:textSize="18sp"
                 android:textColor="@color/white"
-                android:textStyle="bold" />
+                android:textStyle="bold"
+                android:layout_marginBottom="12dp" />
 
-            <TextView
-                android:layout_width="wrap_content"
+            <!-- Feature 1: Intent-Based Filtering -->
+            <LinearLayout
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="16dp"
-                android:text="@string/feature_1"
-                android:textSize="16sp"
-                android:textColor="@color/gray_light" />
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:layout_marginTop="4dp">
 
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="@string/feature_2"
-                android:textSize="16sp"
-                android:textColor="@color/gray_light" />
+                <ImageView
+                    android:layout_width="20dp"
+                    android:layout_height="20dp"
+                    android:src="@android:drawable/ic_search_category_default"
+                    android:tint="@color/blue_accent"
+                    android:layout_marginEnd="10dp" />
 
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="@string/feature_3"
-                android:textSize="16sp"
-                android:textColor="@color/gray_light" />
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Intent-based filtering for accurate object detection"
+                    android:textSize="13sp"
+                    android:textColor="@color/gray_light" />
 
-            <TextView
-                android:layout_width="wrap_content"
+            </LinearLayout>
+
+            <!-- Feature 2: Attribute Description -->
+            <LinearLayout
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="@string/feature_4"
-                android:textSize="16sp"
-                android:textColor="@color/gray_light" />
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:layout_marginTop="8dp">
+
+                <ImageView
+                    android:layout_width="20dp"
+                    android:layout_height="20dp"
+                    android:src="@android:drawable/ic_menu_info_details"
+                    android:tint="@color/blue_accent"
+                    android:layout_marginEnd="10dp" />
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Detailed object descriptions including color and attributes"
+                    android:textSize="13sp"
+                    android:textColor="@color/gray_light" />
+
+            </LinearLayout>
+
+            <!-- Feature 3: Haptic Guidance -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:layout_marginTop="8dp">
+
+                <ImageView
+                    android:layout_width="20dp"
+                    android:layout_height="20dp"
+                    android:src="@android:drawable/ic_lock_silent_mode_off"
+                    android:tint="@color/blue_accent"
+                    android:layout_marginEnd="10dp" />
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Haptic feedback vibration when object is found"
+                    android:textSize="13sp"
+                    android:textColor="@color/gray_light" />
+
+            </LinearLayout>
+
+            <!-- Feature 4: Voice Guidance -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:layout_marginTop="8dp">
+
+                <ImageView
+                    android:layout_width="20dp"
+                    android:layout_height="20dp"
+                    android:src="@android:drawable/ic_btn_speak_now"
+                    android:tint="@color/blue_accent"
+                    android:layout_marginEnd="10dp" />
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Real-time voice guidance to object location"
+                    android:textSize="13sp"
+                    android:textColor="@color/gray_light" />
+
+            </LinearLayout>
 
         </LinearLayout>
 
@@ -100,14 +167,12 @@
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="48dp"
+            android:layout_marginTop="24dp"
             android:text="@string/tap_to_login"
-            android:textSize="20sp"
+            android:textSize="18sp"
             android:textColor="@color/blue_accent"
             android:textStyle="bold" />
 
     </LinearLayout>
-
-</ScrollView>
 
 </FrameLayout>
