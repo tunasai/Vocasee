@@ -7,46 +7,106 @@
     android:background="@color/black"
     android:orientation="vertical"
     android:gravity="center"
-    android:padding="32dp">
+    android:padding="28dp">
 
-    <!-- Logo -->
-    <View
-        android:layout_width="80dp"
-        android:layout_height="80dp"
-        android:background="@drawable/vocasee_logo" />
+    <!-- Eye Icon Circle -->
+    <ImageView
+        android:layout_width="26dp"
+        android:layout_height="26dp"
+        android:layout_gravity="center"
+        android:src="@drawable/vocasee_logo"
+        android:alpha="0.8"
+        android:contentDescription="@string/vocasee_logo_desc" />
+
 
     <!-- App Name -->
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_marginTop="20dp"
         android:text="@string/app_name"
         android:textColor="@color/white"
-        android:textSize="32sp"
-        android:textStyle="bold" />
+        android:textSize="26sp"
+        android:textStyle="bold"
+        android:letterSpacing="0.15"
+        android:layout_marginBottom="8dp" />
 
-    <!-- Instruction -->
+    <!-- Subtitle -->
     <TextView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="12dp"
-        android:layout_marginBottom="32dp"
-        android:paddingHorizontal="32dp"
-        android:gravity="center"
         android:text="@string/login_instruction"
-        android:textColor="@color/gray_light"
-        android:textSize="14sp" />
+        android:textColor="#66FFFFFF"
+        android:textSize="13sp"
+        android:gravity="center"
+        android:lineSpacingMultiplier="1.5"
+        android:layout_marginBottom="48dp" />
 
     <!-- Google Sign In Button -->
     <com.google.android.material.button.MaterialButton
         android:id="@+id/btnGoogleSignIn"
-        android:layout_width="276dp"
-        android:layout_height="80dp"
+        android:layout_width="275dp"
+        android:layout_height="56dp"
+        android:letterSpacing="0.02"
         android:text="@string/google_signin"
-        android:textColor="@color/white"
-        android:textSize="20sp"
+        android:textColor="@color/black"
+        android:textSize="15sp"
         android:textStyle="bold"
-        app:backgroundTint="#318ba2"
-        app:cornerRadius="12dp" />
+        app:backgroundTint="@color/white"
+        app:cornerRadius="50dp" />
+
+    <!-- OR Divider -->
+    <LinearLayout
+        android:layout_width="322dp"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="24dp"
+        android:layout_marginBottom="24dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <View
+            android:layout_width="0dp"
+            android:layout_height="1dp"
+            android:layout_weight="1"
+            android:background="#1AFFFFFF" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="16dp"
+            android:layout_marginEnd="16dp"
+            android:letterSpacing="0.1"
+            android:text="@string/or_divider"
+            android:textColor="#40FFFFFF"
+            android:textSize="11sp" />
+
+        <View
+            android:layout_width="0dp"
+            android:layout_height="1dp"
+            android:layout_weight="1"
+            android:background="#1AFFFFFF" />
+    </LinearLayout>
+
+    <!-- Continue as Guest Button -->
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnGuestLogin"
+        android:layout_width="278dp"
+        android:layout_height="56dp"
+        android:text="@string/continue_as_guest"
+        android:textColor="#80FFFFFF"
+        android:textSize="14sp"
+        app:backgroundTint="#00000000"
+        app:cornerRadius="50dp"
+        app:strokeColor="#1FFFFFFF"
+        app:strokeWidth="1dp" />
+
+    <!-- Guest note -->
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="@string/guest_note"
+        android:textColor="#4DFFFFFF"
+        android:textSize="12sp"
+        android:gravity="center"
+        android:layout_marginTop="20dp" />
 
 </LinearLayout>

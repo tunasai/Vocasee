@@ -3,7 +3,7 @@ package com.vocasee.app;
 import android.content.Intent;
 import android.os.Bundle;
 import android.speech.tts.TextToSpeech;
-import android.view.View;
+import android.widget.Toast;
 
 import androidx.activity.EdgeToEdge;
 import androidx.appcompat.app.AppCompatActivity;
@@ -35,34 +35,22 @@ public class WelcomeActivity extends AppCompatActivity {
         });
 
         // Initialize Text-to-Speech
-        textToSpeech = new TextToSpeech(this, new TextToSpeech.OnInitListener() {
-            @Override
-            public void onInit(int status) {
-                if (status == TextToSpeech.SUCCESS) {
-                    int result = textToSpeech.setLanguage(Locale.US);
-                    if (result != TextToSpeech.LANG_MISSING_DATA &&
-                            result != TextToSpeech.LANG_NOT_SUPPORTED) {
-                        // Speak welcome message
-                        speak("Welcome to VOCASEE. A voice-guided object finder that helps visually impaired users locate essential items through near real-time detection and audio feedback.");
-                    }
+        textToSpeech = new TextToSpeech(this, status -> {
+            if (status == TextToSpeech.SUCCESS) {
+                int result = textToSpeech.setLanguage(Locale.US);
+                if (result != TextToSpeech.LANG_MISSING_DATA &&
+                        result != TextToSpeech.LANG_NOT_SUPPORTED) {
+                    speak("Welcome to VOCASEE. Tap Get Started to continue.");
                 }
             }
         });
 
-        // Make the entire screen clickable to go to login
-        binding.getRoot().setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                speak("Going to login page");
-                // Wait a bit for speech, then navigate
-                v.postDelayed(new Runnable() {
-                    @Override
-                    public void run() {
-                        Intent intent = new Intent(WelcomeActivity.this, LoginActivity.class);
-                        startActivity(intent);
-                    }
-                }, 1000);
-            }
+        // Button click
+        binding.btnGetStarted.setOnClickListener(v -> {
+            Toast.makeText(this, "Going to Login...", Toast.LENGTH_SHORT).show();
+            speak("Going to login page.");
+            Intent intent = new Intent(WelcomeActivity.this, LoginActivity.class);
+            startActivity(intent);
         });
     }
 

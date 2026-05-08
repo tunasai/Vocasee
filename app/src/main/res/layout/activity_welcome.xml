@@ -1,10 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:id="@+id/main"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@color/black"
-    android:clickable="true"
-    android:focusable="true">
+    android:clickable="false"
+    android:focusable="false">
 
     <LinearLayout
         android:layout_width="match_parent"
@@ -17,51 +19,61 @@
         <View
             android:layout_width="80dp"
             android:layout_height="80dp"
-            android:layout_marginTop="16dp"
+            android:layout_marginBottom="16dp"
             android:background="@drawable/vocasee_logo" />
+
+        <!-- "Welcome to" label -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Welcome to"
+            android:textColor="#80FFFFFF"
+            android:textSize="16sp"
+            android:layout_marginBottom="4dp" />
 
         <!-- Title -->
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:gravity="center"
             android:text="@string/welcome_title"
             android:textColor="@color/white"
-            android:textSize="32sp"
-            android:textStyle="bold" />
+            android:textSize="28sp"
+            android:textStyle="bold"
+            android:letterSpacing="0.15"
+            android:gravity="center"
+            android:layout_marginBottom="12dp" />
 
         <!-- Description -->
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
             android:text="@string/welcome_description"
+            android:textColor="#73FFFFFF"
             android:textSize="14sp"
-            android:textColor="@color/gray_light"
             android:gravity="center"
-            android:lineSpacingMultiplier="1.2" />
+            android:lineSpacingMultiplier="1.5"
+            android:layout_marginBottom="20dp" />
 
         <!-- Features Box -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="20dp"
-            android:background="@drawable/rounded_box"
             android:orientation="vertical"
-            android:padding="20dp">
+            android:background="@drawable/rounded_box"
+            android:padding="20dp"
+            android:layout_marginBottom="24dp">
 
-            <!-- Title -->
+            <!-- Features title -->
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="Key Features:"
-                android:textSize="18sp"
                 android:textColor="@color/white"
+                android:textSize="16sp"
                 android:textStyle="bold"
                 android:layout_marginBottom="12dp" />
 
-            <!-- Feature 1: Intent-Based Filtering -->
+            <!-- Feature 1 -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -74,7 +86,8 @@
                     android:layout_height="20dp"
                     android:src="@android:drawable/ic_search_category_default"
                     android:tint="@color/blue_accent"
-                    android:layout_marginEnd="10dp" />
+                    android:layout_marginEnd="10dp"
+                    android:contentDescription="Search icon" />
 
                 <TextView
                     android:layout_width="0dp"
@@ -82,11 +95,10 @@
                     android:layout_weight="1"
                     android:text="Intent-based filtering for accurate object detection"
                     android:textSize="13sp"
-                    android:textColor="@color/gray_light" />
-
+                    android:textColor="#99FFFFFF" />
             </LinearLayout>
 
-            <!-- Feature 2: Attribute Description -->
+            <!-- Feature 2 -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -99,7 +111,8 @@
                     android:layout_height="20dp"
                     android:src="@android:drawable/ic_menu_info_details"
                     android:tint="@color/blue_accent"
-                    android:layout_marginEnd="10dp" />
+                    android:layout_marginEnd="10dp"
+                    android:contentDescription="Info icon" />
 
                 <TextView
                     android:layout_width="0dp"
@@ -107,11 +120,10 @@
                     android:layout_weight="1"
                     android:text="Detailed object descriptions including color and attributes"
                     android:textSize="13sp"
-                    android:textColor="@color/gray_light" />
-
+                    android:textColor="#99FFFFFF" />
             </LinearLayout>
 
-            <!-- Feature 3: Haptic Guidance -->
+            <!-- Feature 3 -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -124,7 +136,8 @@
                     android:layout_height="20dp"
                     android:src="@android:drawable/ic_lock_silent_mode_off"
                     android:tint="@color/blue_accent"
-                    android:layout_marginEnd="10dp" />
+                    android:layout_marginEnd="10dp"
+                    android:contentDescription="Vibration icon" />
 
                 <TextView
                     android:layout_width="0dp"
@@ -132,11 +145,10 @@
                     android:layout_weight="1"
                     android:text="Haptic feedback vibration when object is found"
                     android:textSize="13sp"
-                    android:textColor="@color/gray_light" />
-
+                    android:textColor="#99FFFFFF" />
             </LinearLayout>
 
-            <!-- Feature 4: Voice Guidance -->
+            <!-- Feature 4 -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -149,7 +161,8 @@
                     android:layout_height="20dp"
                     android:src="@android:drawable/ic_btn_speak_now"
                     android:tint="@color/blue_accent"
-                    android:layout_marginEnd="10dp" />
+                    android:layout_marginEnd="10dp"
+                    android:contentDescription="Voice icon" />
 
                 <TextView
                     android:layout_width="0dp"
@@ -157,22 +170,25 @@
                     android:layout_weight="1"
                     android:text="Real-time voice guidance to object location"
                     android:textSize="13sp"
-                    android:textColor="@color/gray_light" />
-
+                    android:textColor="#99FFFFFF" />
             </LinearLayout>
 
         </LinearLayout>
 
-        <!-- Tap to Login -->
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="24dp"
-            android:text="@string/tap_to_login"
-            android:textSize="18sp"
-            android:textColor="@color/blue_accent"
-            android:textStyle="bold" />
+        <!-- Get Started Button -->
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnGetStarted"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:text="Get Started"
+            android:textColor="@color/black"
+            android:textSize="15sp"
+            android:textStyle="bold"
+            android:letterSpacing="0.05"
+            app:backgroundTint="@color/white"
+            app:cornerRadius="50dp" />
+
+
 
     </LinearLayout>
-
 </FrameLayout>

@@ -6,239 +6,326 @@ import android.speech.RecognitionListener;
 import android.speech.RecognizerIntent;
 import android.speech.SpeechRecognizer;
 import android.speech.tts.TextToSpeech;
+import android.util.Log;
+import android.view.LayoutInflater;
 import android.view.View;
-import android.widget.Toast;
+import android.view.animation.Animation;
+import android.view.animation.ScaleAnimation;
+import android.widget.TextView;
 
-import androidx.activity.EdgeToEdge;
 import androidx.appcompat.app.AppCompatActivity;
-import androidx.core.graphics.Insets;
-import androidx.core.view.ViewCompat;
-import androidx.core.view.WindowInsetsCompat;
+import androidx.camera.core.CameraSelector;
+import androidx.camera.core.Preview;
+import androidx.camera.lifecycle.ProcessCameraProvider;
+import androidx.core.content.ContextCompat;
 
+import com.google.android.material.bottomsheet.BottomSheetDialog;
+import com.google.common.util.concurrent.ListenableFuture;
 import com.vocasee.app.databinding.ActivityFinderBinding;
 
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class FinderActivity extends AppCompatActivity {
+
+    private static final String TAG = "FinderActivity";
+
+    private static final List<String> PREDEFINED_OBJECTS = Arrays.asList(
+            "keys", "eyeglasses", "headphones", "wallet", "mobile phone",
+            "remote control", "book", "water bottle", "cup", "backpack",
+            "charger", "body spray", "blank cards", "scissors", "umbrella",
+            "watch", "shoes", "hat", "bag", "pen"
+    );
 
     private ActivityFinderBinding binding;
     private TextToSpeech textToSpeech;
     private SpeechRecognizer speechRecognizer;
-    private boolean isListening = false;
-    private boolean tutorialShown = true;
+    private BottomSheetDialog voiceModal;
+    private ExecutorService cameraExecutor;
+
+    // targetObject is accessed across methods — keep as field
+    private String targetObject = null;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        EdgeToEdge.enable(this);
-
         binding = ActivityFinderBinding.inflate(getLayoutInflater());
         setContentView(binding.getRoot());
 
-        ViewCompat.setOnApplyWindowInsetsListener(binding.main, (v, insets) -> {
-            Insets systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
-            v.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom);
-            return insets;
-        });
+        cameraExecutor = Executors.newSingleThreadExecutor();
 
-        // Initialize Text-to-Speech
-        textToSpeech = new TextToSpeech(this, new TextToSpeech.OnInitListener() {
-            @Override
-            public void onInit(int status) {
-                if (status == TextToSpeech.SUCCESS) {
-                    textToSpeech.setLanguage(Locale.US);
-                    if (tutorialShown) {
-                        speak("Welcome to Finder Mode. Tutorial: Tap the microphone button and say the name of the object you want to find. The app will guide you to its location using voice instructions. Tap anywhere to start.");
-                    }
-                }
+        textToSpeech = new TextToSpeech(this, status -> {
+            if (status == TextToSpeech.SUCCESS) {
+                textToSpeech.setLanguage(Locale.US);
+                speak(getString(R.string.tts_ready));
             }
         });
 
-        // Initialize Speech Recognizer
-        setupSpeechRecognizer();
+        startCamera();
 
-        // Tutorial overlay click (if you have it in your layout)
-        if (binding.tutorialOverlay != null) {
-            binding.tutorialOverlay.setOnClickListener(new View.OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    binding.tutorialOverlay.setVisibility(View.GONE);
-                    tutorialShown = false;
-                    speak("Tutorial closed. Tap the microphone button to start finding objects.");
-                }
-            });
-        }
+        binding.btnMic.setOnClickListener(v -> openVoiceModal());
 
-        // Microphone button (if you have it)
-        if (binding.btnMicrophone != null) {
-            binding.btnMicrophone.setOnClickListener(new View.OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    if (!isListening) {
-                        startListening();
-                    }
-                }
-            });
-        }
+        binding.btnMenu.setOnClickListener(v ->
+                startActivity(new Intent(FinderActivity.this, SettingsActivity.class)));
 
-        // Menu button (if you have it)
-        if (binding.btnMenu != null) {
-            binding.btnMenu.setOnClickListener(new View.OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    speak("Menu opened. Options: Settings, Logout.");
-                    Toast.makeText(FinderActivity.this, "Menu - Settings, Logout", Toast.LENGTH_SHORT).show();
-                }
-            });
-        }
+        binding.btnSettings.setOnClickListener(v ->
+                startActivity(new Intent(FinderActivity.this, SettingsActivity.class)));
     }
 
-    private void setupSpeechRecognizer() {
+    // ─── CAMERA ───────────────────────────────
+
+    private void startCamera() {
+        ListenableFuture<ProcessCameraProvider> future =
+                ProcessCameraProvider.getInstance(this);
+
+        future.addListener(() -> {
+            try {
+                ProcessCameraProvider cameraProvider = future.get();
+                Preview preview = new Preview.Builder().build();
+                preview.setSurfaceProvider(binding.cameraPreview.getSurfaceProvider());
+                cameraProvider.unbindAll();
+                cameraProvider.bindToLifecycle(
+                        this, CameraSelector.DEFAULT_BACK_CAMERA, preview);
+            } catch (Exception e) {
+                Log.e(TAG, "Camera start failed", e);
+            }
+        }, ContextCompat.getMainExecutor(this));
+    }
+
+    // ─── VOICE MODAL ──────────────────────────
+
+    private void openVoiceModal() {
+        View modalView = LayoutInflater.from(this)
+                .inflate(R.layout.dialog_voice_modal, null);
+
+        TextView tvVoiceInput = modalView.findViewById(R.id.tvVoiceInput);
+        View btnCancel = modalView.findViewById(R.id.btnVoiceCancel);
+
+        animateWaveBars(modalView);
+
+        voiceModal = new BottomSheetDialog(this);
+        voiceModal.setContentView(modalView);
+        voiceModal.show();
+
+        btnCancel.setOnClickListener(v -> {
+            stopListening();
+            voiceModal.dismiss();
+            updateMicState(false);
+        });
+
+        voiceModal.setOnDismissListener(d -> {
+            stopListening();
+            updateMicState(false);
+        });
+
+        updateMicState(true);
+        startListening(tvVoiceInput);
+    }
+
+    // ─── SPEECH RECOGNITION ───────────────────
+
+    private void startListening(TextView tvVoiceInput) {
         speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this);
+
+        Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.US);
+        intent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
+
         speechRecognizer.setRecognitionListener(new RecognitionListener() {
+
             @Override
-            public void onReadyForSpeech(Bundle params) {
-                if (binding.tvStatus != null) {
-                    binding.tvStatus.setText("Listening...");
-                    binding.tvStatus.setVisibility(View.VISIBLE);
+            public void onPartialResults(Bundle partialResults) {
+                ArrayList<String> partial = partialResults
+                        .getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
+                if (partial != null && !partial.isEmpty()) {
+                    runOnUiThread(() -> tvVoiceInput.setText(partial.get(0)));
                 }
             }
 
             @Override
-            public void onBeginningOfSpeech() {
-                isListening = true;
-            }
-
-            @Override
-            public void onRmsChanged(float rmsdB) {}
-
-            @Override
-            public void onBufferReceived(byte[] buffer) {}
-
-            @Override
-            public void onEndOfSpeech() {
-                isListening = false;
-                if (binding.tvStatus != null) {
-                    binding.tvStatus.setVisibility(View.GONE);
+            public void onResults(Bundle results) {
+                ArrayList<String> matches = results
+                        .getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
+                if (matches != null && !matches.isEmpty()) {
+                    final String spoken = matches.get(0).toLowerCase().trim();
+                    runOnUiThread(() -> {
+                        tvVoiceInput.setText(spoken);
+                        if (voiceModal != null) voiceModal.dismiss();
+                        handleVoiceResult(spoken);
+                    });
                 }
             }
 
             @Override
             public void onError(int error) {
-                isListening = false;
-                if (binding.tvStatus != null) {
-                    binding.tvStatus.setVisibility(View.GONE);
-                }
-                String errorMessage = getErrorText(error);
-                speak("Sorry, " + errorMessage + ". Please try again.");
-                Toast.makeText(FinderActivity.this, errorMessage, Toast.LENGTH_SHORT).show();
+                runOnUiThread(() -> {
+                    tvVoiceInput.setText(getString(R.string.voice_no_hear));
+                    speak(getString(R.string.tts_no_hear));
+                });
             }
 
-            @Override
-            public void onResults(Bundle results) {
-                ArrayList<String> matches = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
-                if (matches != null && !matches.isEmpty()) {
-                    String spokenText = matches.get(0);
-                    if (binding.tvStatus != null) {
-                        binding.tvStatus.setText("Searching for: " + spokenText);
-                        binding.tvStatus.setVisibility(View.VISIBLE);
-                    }
-                    searchForObject(spokenText);
-                }
+            @Override public void onReadyForSpeech(Bundle p) {}
+            @Override public void onBeginningOfSpeech() {}
+            @Override public void onRmsChanged(float v) {}
+            @Override public void onBufferReceived(byte[] b) {}
+            @Override public void onEndOfSpeech() {}
+            @Override public void onEvent(int t, Bundle b) {}
+        });
+
+        speechRecognizer.startListening(intent);
+    }
+
+    private void stopListening() {
+        if (speechRecognizer != null) {
+            speechRecognizer.stopListening();
+            speechRecognizer.destroy();
+            speechRecognizer = null;
+        }
+    }
+
+    // ─── VOICE RESULT → SCAN LOGIC ────────────
+
+    private void handleVoiceResult(String spoken) {
+        // Two-step: assign to temp, then copy to effectively-final for lambda
+        String matchedTemp = null;
+        for (String obj : PREDEFINED_OBJECTS) {
+            if (spoken.contains(obj)) {
+                matchedTemp = obj;
+                break;
             }
+        }
+        final String matched = matchedTemp; // effectively final — safe for lambda
 
-            @Override
-            public void onPartialResults(Bundle partialResults) {}
+        if (matched == null) {
+            targetObject = spoken;
+            setDetectionState("not_found");
+            updateTargetLabel(getString(R.string.target_not_found, spoken));
+            speak(getString(R.string.tts_not_predefined, spoken));
+            return;
+        }
 
-            @Override
-            public void onEvent(int eventType, Bundle params) {}
+        targetObject = matched;
+        setDetectionState("scanning");
+        updateTargetLabel(getString(R.string.target_looking, matched));
+        speak(getString(R.string.tts_scanning, matched));
+
+        // Simulated detection — replace with ML Kit result later
+        binding.getRoot().postDelayed(() -> simulateDetection(matched), 3000);
+    }
+
+    private void simulateDetection(String object) {
+        String detectedColor = "black"; // replace with real ML Kit attribute later
+
+        setDetectionState("found");
+        updateTargetLabel(getString(R.string.target_found, object));
+        showBoundingBox();
+
+        String name = object.substring(0, 1).toUpperCase() + object.substring(1);
+        speak(name + " found — " + detectedColor + " " + object
+                + ". It is in the center of the frame.");
+    }
+
+    // ─── UI STATE ─────────────────────────────
+
+    private void setDetectionState(String state) {
+        runOnUiThread(() -> {
+            switch (state) {
+                case "idle":
+                    binding.tvStatusText.setText(getString(R.string.status_idle));
+                    binding.statusDot.setBackgroundResource(R.drawable.dot_white);
+                    binding.scanningContainer.setVisibility(View.GONE);
+                    hideBoundingBox();
+                    break;
+
+                case "scanning":
+                    binding.tvStatusText.setText(
+                            getString(R.string.status_scanning, targetObject));
+                    binding.statusDot.setBackgroundResource(R.drawable.dot_amber);
+                    binding.scanningContainer.setVisibility(View.VISIBLE);
+                    hideBoundingBox();
+                    break;
+
+                case "found":
+                    String name = targetObject.substring(0, 1).toUpperCase()
+                            + targetObject.substring(1);
+                    binding.tvStatusText.setText(
+                            getString(R.string.status_found, name));
+                    binding.statusDot.setBackgroundResource(R.drawable.dot_green);
+                    binding.scanningContainer.setVisibility(View.GONE);
+                    break;
+
+                case "not_found":
+                    binding.tvStatusText.setText(
+                            getString(R.string.status_not_in_classes, targetObject));
+                    binding.statusDot.setBackgroundResource(R.drawable.dot_red);
+                    binding.scanningContainer.setVisibility(View.GONE);
+                    hideBoundingBox();
+                    break;
+            }
         });
     }
 
-    private void startListening() {
-        Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
-        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
-        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault());
-        intent.putExtra(RecognizerIntent.EXTRA_PROMPT, "Say the object name...");
+    private void updateTargetLabel(String text) {
+        runOnUiThread(() -> binding.tvTargetLabel.setText(text));
+    }
 
-        speak("Listening. Please say the object you want to find.");
+    private void updateMicState(boolean listening) {
+        runOnUiThread(() -> binding.btnMic.setBackgroundResource(
+                listening ? R.drawable.mic_button_listening : R.drawable.mic_button_bg));
+    }
 
-        try {
-            speechRecognizer.startListening(intent);
-        } catch (Exception e) {
-            Toast.makeText(this, "Speech recognition not available", Toast.LENGTH_SHORT).show();
+    private void showBoundingBox() {
+        runOnUiThread(() -> {
+            binding.detectionBox.setVisibility(View.VISIBLE);
+            binding.detectionLabel.setVisibility(View.VISIBLE);
+            binding.detectionLabel.setText(targetObject);
+            // Coordinates will be replaced by real ML Kit bounding box
+            binding.detectionBox.setX(200);
+            binding.detectionBox.setY(400);
+        });
+    }
+
+    private void hideBoundingBox() {
+        runOnUiThread(() -> {
+            binding.detectionBox.setVisibility(View.GONE);
+            binding.detectionLabel.setVisibility(View.GONE);
+        });
+    }
+
+    // ─── WAVE BAR ANIMATION ───────────────────
+
+    private void animateWaveBars(View modalView) {
+        int[] waveIds = {
+                R.id.wave1, R.id.wave2, R.id.wave3, R.id.wave4, R.id.wave5,
+                R.id.wave6, R.id.wave7, R.id.wave8, R.id.wave9, R.id.wave10
+        };
+        float[] scales = { 0.3f, 0.6f, 1.0f, 1.2f, 0.9f, 0.4f, 0.7f, 1.1f, 0.3f, 0.7f };
+
+        for (int i = 0; i < waveIds.length; i++) {
+            View bar = modalView.findViewById(waveIds[i]);
+            if (bar == null) continue;
+
+            ScaleAnimation anim = new ScaleAnimation(
+                    1f, 1f,
+                    0.2f, scales[i],
+                    Animation.RELATIVE_TO_SELF, 0.5f,
+                    Animation.RELATIVE_TO_SELF, 1.0f
+            );
+            anim.setDuration(600 + (i * 80L));
+            anim.setRepeatCount(Animation.INFINITE);
+            anim.setRepeatMode(Animation.REVERSE);
+            anim.setStartOffset(i * 80L);
+            bar.startAnimation(anim);
         }
     }
 
-    private void searchForObject(final String objectName) {
-        speak("Searching for " + objectName);
-
-        // Simulate object search with delay
-        binding.main.postDelayed(new Runnable() {
-            @Override
-            public void run() {
-                // Mock object finding (replace with actual camera/ML logic later)
-                String result = findObjectMock(objectName.toLowerCase());
-                speak(result);
-                if (binding.tvStatus != null) {
-                    binding.tvStatus.setText(result);
-
-                    // Hide status after a few seconds
-                    binding.tvStatus.postDelayed(new Runnable() {
-                        @Override
-                        public void run() {
-                            binding.tvStatus.setVisibility(View.GONE);
-                        }
-                    }, 5000);
-                }
-            }
-        }, 1500);
-    }
-
-    private String findObjectMock(String objectName) {
-        // Mock database of objects and locations
-        if (objectName.contains("key") || objectName.contains("keys")) {
-            return "I found your keys on the kitchen counter, 2 feet to your right.";
-        } else if (objectName.contains("phone")) {
-            return "I found your phone on the coffee table, 3 feet ahead.";
-        } else if (objectName.contains("glass") || objectName.contains("glasses")) {
-            return "I found your glasses on the bedside table, behind you.";
-        } else if (objectName.contains("wallet")) {
-            return "I found your wallet in the drawer, left side.";
-        } else if (objectName.contains("remote")) {
-            return "I found your remote control on the sofa, to your left.";
-        } else if (objectName.contains("bottle")) {
-            return "I found a bottle on the table, straight ahead.";
-        } else {
-            return "I could not find " + objectName + " in the current view. Please move the camera around slowly.";
-        }
-    }
-
-    private String getErrorText(int errorCode) {
-        switch (errorCode) {
-            case SpeechRecognizer.ERROR_AUDIO:
-                return "Audio recording error";
-            case SpeechRecognizer.ERROR_CLIENT:
-                return "Client side error";
-            case SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS:
-                return "Insufficient permissions";
-            case SpeechRecognizer.ERROR_NETWORK:
-                return "Network error";
-            case SpeechRecognizer.ERROR_NETWORK_TIMEOUT:
-                return "Network timeout";
-            case SpeechRecognizer.ERROR_NO_MATCH:
-                return "No speech match found";
-            case SpeechRecognizer.ERROR_RECOGNIZER_BUSY:
-                return "Recognition service busy";
-            case SpeechRecognizer.ERROR_SERVER:
-                return "Server error";
-            case SpeechRecognizer.ERROR_SPEECH_TIMEOUT:
-                return "No speech input";
-            default:
-                return "Speech recognition error";
-        }
-    }
+    // ─── TTS ──────────────────────────────────
 
     private void speak(String text) {
         if (textToSpeech != null) {
@@ -246,15 +333,25 @@ public class FinderActivity extends AppCompatActivity {
         }
     }
 
+    // ─── LIFECYCLE ────────────────────────────
+
     @Override
     protected void onDestroy() {
+        super.onDestroy();
         if (textToSpeech != null) {
             textToSpeech.stop();
             textToSpeech.shutdown();
         }
-        if (speechRecognizer != null) {
-            speechRecognizer.destroy();
+        stopListening();
+        cameraExecutor.shutdown();
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        stopListening();
+        if (voiceModal != null && voiceModal.isShowing()) {
+            voiceModal.dismiss();
         }
-        super.onDestroy();
     }
 }

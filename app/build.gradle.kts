@@ -1,5 +1,6 @@
 plugins {
     alias(libs.plugins.android.application)
+    alias(libs.plugins.google.services)
 }
 
 android {
@@ -48,4 +49,17 @@ dependencies {
     testImplementation(libs.junit)
     androidTestImplementation(libs.espresso.core)
     androidTestImplementation(libs.ext.junit)
+
+    // CameraX (for the camera view)
+    implementation("androidx.camera:camera-core:1.3.4")
+    implementation("androidx.camera:camera-camera2:1.3.4")
+    implementation("androidx.camera:camera-lifecycle:1.3.4")
+    implementation("androidx.camera:camera-view:1.3.4")
+    // ML Kit Object Detection (for detecting objects)
+    implementation("com.google.mlkit:object-detection:17.0.2")
+    // Google Sign-In (for the Google login button)
+    implementation("com.google.android.gms:play-services-auth:21.2.0")
+
+    // Firebase Auth
+    implementation("com.google.firebase:firebase-auth:23.0.0")
 }

@@ -4,47 +4,120 @@
     android:layout_height="match_parent"
     android:background="@color/black">
 
-    <!-- Camera Preview (future ML/CV feature) -->
-    <FrameLayout
+    <!-- Camera Preview -->
+    <androidx.camera.view.PreviewView
         android:id="@+id/cameraPreview"
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
-    <!-- Menu Button -->
-    <ImageButton
-        android:id="@+id/btnMenu"
-        android:layout_width="56dp"
-        android:layout_height="56dp"
-        android:layout_alignParentTop="true"
-        android:layout_alignParentEnd="true"
-        android:layout_margin="24dp"
-        android:background="@drawable/menu"
-        android:src="@android:drawable/ic_menu_more"
-        android:contentDescription="Menu" />
+    <!-- Status Bar Area (Top) -->
+    <LinearLayout
+        android:id="@+id/statusBar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:padding="16dp"
+        android:gravity="center_vertical"
+        android:background="#80000000">
 
-    <!-- Microphone Button -->
-    <ImageButton
-        android:id="@+id/btnMicrophone"
-        android:layout_width="80dp"
-        android:layout_height="80dp"
-        android:layout_alignParentBottom="true"
-        android:layout_centerHorizontal="true"
-        android:layout_marginBottom="48dp"
-        android:background="@drawable/microphone_outline"
-        android:src="@android:drawable/ic_btn_speak_now"
-        android:contentDescription="Tap to search" />
+        <View
+            android:id="@+id/statusDot"
+            android:layout_width="12dp"
+            android:layout_height="12dp"
+            android:background="@drawable/dot_white"
+            android:layout_marginEnd="12dp" />
 
-    <!-- Status Text -->
+        <TextView
+            android:id="@+id/tvStatusText"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="@string/status_idle"
+            android:textColor="@color/white"
+            android:textSize="14sp"
+            android:textStyle="bold" />
+
+        <ImageButton
+            android:id="@+id/btnMenu"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:src="@android:drawable/ic_menu_more"
+            android:contentDescription="@string/cd_menu" />
+
+        <ImageButton
+            android:id="@+id/btnSettings"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:src="@android:drawable/ic_menu_preferences"
+            android:contentDescription="@string/cd_settings" />
+    </LinearLayout>
+
+    <!-- Scanning Overlay Container -->
+    <FrameLayout
+        android:id="@+id/scanningContainer"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone">
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="#33000000" />
+    </FrameLayout>
+
+    <!-- Detection Overlay -->
+    <View
+        android:id="@+id/detectionBox"
+        android:layout_width="120dp"
+        android:layout_height="120dp"
+        android:background="@drawable/detection_box_border"
+        android:visibility="gone" />
+
     <TextView
-        android:id="@+id/tvStatus"
+        android:id="@+id/detectionLabel"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_centerInParent="true"
-        android:text="Point camera at the area"
-        android:textSize="20sp"
+        android:background="@color/blue_accent"
+        android:paddingHorizontal="8dp"
+        android:paddingVertical="2dp"
         android:textColor="@color/white"
+        android:textSize="12sp"
         android:textStyle="bold"
         android:visibility="gone" />
+
+    <!-- Control Area (Bottom) -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_alignParentBottom="true"
+        android:orientation="vertical"
+        android:gravity="center_horizontal"
+        android:paddingBottom="40dp">
+
+        <TextView
+            android:id="@+id/tvTargetLabel"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="24dp"
+            android:background="@drawable/rounded_box"
+            android:paddingHorizontal="16dp"
+            android:paddingVertical="8dp"
+            android:textColor="@color/white"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:visibility="visible" />
+
+        <ImageButton
+            android:id="@+id/btnMic"
+            android:layout_width="84dp"
+            android:layout_height="84dp"
+            android:background="@drawable/mic_button_bg"
+            android:src="@android:drawable/ic_btn_speak_now"
+            android:contentDescription="@string/cd_mic"
+            android:padding="24dp"
+            android:scaleType="centerInside" />
+    </LinearLayout>
 
     <!-- Tutorial Overlay -->
     <LinearLayout
@@ -57,7 +130,7 @@
         android:padding="32dp"
         android:clickable="true"
         android:focusable="true"
-        android:visibility="visible">
+        android:visibility="gone">
 
         <TextView
             android:layout_width="wrap_content"

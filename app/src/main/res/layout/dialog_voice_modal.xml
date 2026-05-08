@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="#1E1E2E"
+    android:gravity="center"
+    android:orientation="vertical"
+    android:paddingHorizontal="24dp"
+    android:paddingTop="32dp"
+    android:paddingBottom="24dp">
+
+    <!-- Title -->
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="@string/voice_hint"
+        android:textColor="#FFFFFF"
+        android:textSize="18sp"
+        android:textStyle="bold" />
+
+    <!-- Wave bars container -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="60dp"
+        android:layout_marginTop="24dp"
+        android:gravity="center"
+        android:orientation="horizontal">
+
+        <View android:id="@+id/wave1"
+            android:layout_width="6dp" android:layout_height="30dp"
+            android:layout_marginHorizontal="3dp"
+            android:background="#6366F1" />
+        <View android:id="@+id/wave2"
+            android:layout_width="6dp" android:layout_height="30dp"
+            android:layout_marginHorizontal="3dp"
+            android:background="#6366F1" />
+        <View android:id="@+id/wave3"
+            android:layout_width="6dp" android:layout_height="30dp"
+            android:layout_marginHorizontal="3dp"
+            android:background="#6366F1" />
+        <View android:id="@+id/wave4"
+            android:layout_width="6dp" android:layout_height="30dp"
+            android:layout_marginHorizontal="3dp"
+            android:background="#6366F1" />
+        <View android:id="@+id/wave5"
+            android:layout_width="6dp" android:layout_height="30dp"
+            android:layout_marginHorizontal="3dp"
+            android:background="#6366F1" />
+        <View android:id="@+id/wave6"
+            android:layout_width="6dp" android:layout_height="30dp"
+            android:layout_marginHorizontal="3dp"
+            android:background="#6366F1" />
+        <View android:id="@+id/wave7"
+            android:layout_width="6dp" android:layout_height="30dp"
+            android:layout_marginHorizontal="3dp"
+            android:background="#6366F1" />
+        <View android:id="@+id/wave8"
+            android:layout_width="6dp" android:layout_height="30dp"
+            android:layout_marginHorizontal="3dp"
+            android:background="#6366F1" />
+        <View android:id="@+id/wave9"
+            android:layout_width="6dp" android:layout_height="30dp"
+            android:layout_marginHorizontal="3dp"
+            android:background="#6366F1" />
+        <View android:id="@+id/wave10"
+            android:layout_width="6dp" android:layout_height="30dp"
+            android:layout_marginHorizontal="3dp"
+            android:background="#6366F1" />
+
+    </LinearLayout>
+
+    <!-- Spoken text display -->
+    <TextView
+        android:id="@+id/tvVoiceInput"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="20dp"
+        android:gravity="center"
+        android:hint="@string/voice_hint"
+        android:textColor="#FFFFFF"
+        android:textColorHint="#888888"
+        android:textSize="16sp" />
+
+    <!-- Cancel button -->
+    <Button
+        android:id="@+id/btnVoiceCancel"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="24dp"
+        android:backgroundTint="#3F3F5A"
+        android:text="@string/voice_cancel"
+        android:textColor="#FFFFFF" />
+
+</LinearLayout>
