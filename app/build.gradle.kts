@@ -5,16 +5,12 @@ plugins {
 
 android {
     namespace = "com.vocasee.app"
-    compileSdk {
-        version = release(36) {
-            minorApiLevel = 1
-        }
-    }
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.vocasee.app"
         minSdk = 26
-        targetSdk = 36
+        targetSdk = 35
         versionCode = 1
         versionName = "1.0"
 
@@ -36,6 +32,9 @@ android {
     }
     buildFeatures {
         viewBinding = true
+    }
+    aaptOptions {
+        noCompress("tflite")
     }
 }
 
@@ -62,4 +61,12 @@ dependencies {
 
     // Firebase Auth
     implementation("com.google.firebase:firebase-auth:23.0.0")
+
+    implementation("org.tensorflow:tensorflow-lite:2.17.0") {
+        exclude(group = "org.tensorflow", module = "tensorflow-lite-api")
+    }
+    implementation("org.tensorflow:tensorflow-lite-support:0.4.4") {
+        exclude(group = "org.tensorflow", module = "tensorflow-lite-api")
+        exclude(group = "org.tensorflow", module = "tensorflow-lite-support-api")
+    }
 }
