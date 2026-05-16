@@ -1,16 +1,28 @@
 <?xml version="1.0" encoding="utf-8"?>
-<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@color/black">
 
-    <!-- Camera Preview -->
+    <!-- Camera Preview (full screen) -->
     <androidx.camera.view.PreviewView
         android:id="@+id/cameraPreview"
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
-    <!-- Status Bar Area (Top) -->
+    <!-- Scanning Overlay — dim layer shown while searching -->
+    <FrameLayout
+        android:id="@+id/scanningContainer"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone">
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="#33000000" />
+    </FrameLayout>
+
+    <!-- Status Bar (top) -->
     <LinearLayout
         android:id="@+id/statusBar"
         android:layout_width="match_parent"
@@ -36,61 +48,13 @@
             android:textColor="@color/white"
             android:textSize="14sp"
             android:textStyle="bold" />
-
-        <ImageButton
-            android:id="@+id/btnMenu"
-            android:layout_width="44dp"
-            android:layout_height="44dp"
-            android:background="?attr/selectableItemBackgroundBorderless"
-            android:src="@android:drawable/ic_menu_more"
-            android:contentDescription="@string/cd_menu" />
-
-        <ImageButton
-            android:id="@+id/btnSettings"
-            android:layout_width="44dp"
-            android:layout_height="44dp"
-            android:background="?attr/selectableItemBackgroundBorderless"
-            android:src="@android:drawable/ic_menu_preferences"
-            android:contentDescription="@string/cd_settings" />
     </LinearLayout>
 
-    <!-- Scanning Overlay Container -->
-    <FrameLayout
-        android:id="@+id/scanningContainer"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:visibility="gone">
-        <View
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:background="#33000000" />
-    </FrameLayout>
-
-    <!-- Detection Overlay -->
-    <View
-        android:id="@+id/detectionBox"
-        android:layout_width="120dp"
-        android:layout_height="120dp"
-        android:background="@drawable/detection_box_border"
-        android:visibility="gone" />
-
-    <TextView
-        android:id="@+id/detectionLabel"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:background="@color/blue_accent"
-        android:paddingHorizontal="8dp"
-        android:paddingVertical="2dp"
-        android:textColor="@color/white"
-        android:textSize="12sp"
-        android:textStyle="bold"
-        android:visibility="gone" />
-
-    <!-- Control Area (Bottom) -->
+    <!-- Bottom controls -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_alignParentBottom="true"
+        android:layout_gravity="bottom"
         android:orientation="vertical"
         android:gravity="center_horizontal"
         android:paddingBottom="40dp">
@@ -119,69 +83,25 @@
             android:scaleType="centerInside" />
     </LinearLayout>
 
-    <!-- Tutorial Overlay -->
-    <LinearLayout
-        android:id="@+id/tutorialOverlay"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:background="#E6000000"
-        android:orientation="vertical"
-        android:gravity="center"
-        android:padding="32dp"
-        android:clickable="true"
-        android:focusable="true"
-        android:visibility="gone">
+    <!-- Detection Box — MUST BE LAST TO BE ON TOP -->
+    <View
+        android:id="@+id/detectionBox"
+        android:layout_width="1dp"
+        android:layout_height="1dp"
+        android:background="@drawable/detection_box_border"
+        android:visibility="gone" />
 
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="@string/tutorial_title"
-            android:textSize="28sp"
-            android:textColor="@color/white"
-            android:textStyle="bold"
-            android:gravity="center" />
+    <!-- Detection Label — MUST BE LAST TO BE ON TOP -->
+    <TextView
+        android:id="@+id/detectionLabel"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:background="@color/blue_accent"
+        android:paddingHorizontal="8dp"
+        android:paddingVertical="4dp"
+        android:textColor="@color/white"
+        android:textSize="13sp"
+        android:textStyle="bold"
+        android:visibility="gone" />
 
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="32dp"
-            android:text="@string/tutorial_step1"
-            android:textSize="18sp"
-            android:textColor="@color/gray_light" />
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:text="@string/tutorial_step2"
-            android:textSize="18sp"
-            android:textColor="@color/gray_light" />
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:text="@string/tutorial_step3"
-            android:textSize="18sp"
-            android:textColor="@color/gray_light" />
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:text="@string/tutorial_step4"
-            android:textSize="18sp"
-            android:textColor="@color/gray_light" />
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="48dp"
-            android:text="@string/tap_to_start"
-            android:textSize="20sp"
-            android:textColor="@color/blue_accent"
-            android:textStyle="bold" />
-
-    </LinearLayout>
-
-</RelativeLayout>
+</FrameLayout>

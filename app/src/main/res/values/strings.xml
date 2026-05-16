@@ -31,7 +31,9 @@
     <string name="first_fragment_label">First Fragment</string>
     <string name="second_fragment_label">Second Fragment</string>
     <string name="default_web_client_id">305190872017-c15p92b3u3g3dplgkk9p7f9m1vkp67et.apps.googleusercontent.com</string>
-    <string name="tts_found">%1$s found — %2$s %3$s. It is in the center of the frame.</string>
+    <string name="tts_found">%1$s found. It is %2$s.</string>
+    <!-- TTS mode 1 — object not yet visible during scanning -->
+    <string name="tts_not_yet_visible">Still looking for %1$s. Please move the camera slowly.</string>
     <string name="lorem_ipsum">
         Lorem ipsum dolor sit amet, consectetur adipiscing elit. Nam in scelerisque sem. Mauris
         volutpat, dolor id interdum ullamcorper, risus dolor egestas lectus, sit amet mattis purus
@@ -92,4 +94,6 @@
     <string name="cd_menu">Menu</string>
     <string name="cd_settings">Settings</string>
     <string name="cd_camera">Camera preview</string>
+    <string name="voice_listening_hint">Listening…</string>
+
 </resources>
