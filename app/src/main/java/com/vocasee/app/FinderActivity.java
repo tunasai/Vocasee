@@ -313,8 +313,24 @@ public class FinderActivity extends AppCompatActivity {
 
             Bitmap modelInput = applyLetterbox(uprightBitmap, MODEL_INPUT_SIZE);
 
+//            List<TFLiteDetector.Detection> detections =
+//                    detector.detect(modelInput, labelSnapshot);
+
+            long startTime = System.currentTimeMillis();
+
             List<TFLiteDetector.Detection> detections =
                     detector.detect(modelInput, labelSnapshot);
+
+            long endTime = System.currentTimeMillis();
+
+            long latency = endTime - startTime;
+            float fps = 1000f / latency;
+
+            Log.d(
+                    "PERFORMANCE",
+                    "Latency: " + latency +
+                            " ms | FPS: " + String.format("%.2f", fps)
+            );
 
             if (detections.isEmpty()) {
                 modelInput.recycle();

@@ -1,6 +1,5 @@
 plugins {
     alias(libs.plugins.android.application)
-    alias(libs.plugins.google.services)
 }
 
 android {
@@ -56,12 +55,6 @@ dependencies {
     implementation("androidx.camera:camera-view:1.3.4")
     // ML Kit Object Detection (for detecting objects)
     implementation("com.google.mlkit:object-detection:17.0.2")
-    // Google Sign-In (for the Google login button)
-    implementation("com.google.android.gms:play-services-auth:21.2.0")
-
-    // Firebase Auth
-    implementation("com.google.firebase:firebase-auth:23.0.0")
-
     implementation("org.tensorflow:tensorflow-lite:2.17.0") {
         exclude(group = "org.tensorflow", module = "tensorflow-lite-api")
     }

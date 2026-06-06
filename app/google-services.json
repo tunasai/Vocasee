@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "305190872017",
+    "project_id": "vocasee",
+    "storage_bucket": "vocasee.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:305190872017:android:c614ceefd75a054e0976f0",
+        "android_client_info": {
+          "package_name": "com.vocasee.app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "305190872017-h6qd8svehjs022kle9v7u3fobdmea4oe.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.vocasee.app",
+            "certificate_hash": "96ac8719aac4c5df723daac0ff663014b0352593"
+          }
+        },
+        {
+          "client_id": "305190872017-c15p92b3u3g3dplgkk9p7f9m1vkp67et.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBWdNOMOa5ovijXXX9dfWMyGXMebxYA9lU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "305190872017-c15p92b3u3g3dplgkk9p7f9m1vkp67et.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
