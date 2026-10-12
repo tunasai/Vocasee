@@ -1,107 +1,369 @@
 <?xml version="1.0" encoding="utf-8"?>
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@color/black">
 
-    <!-- Camera Preview (full screen) -->
     <androidx.camera.view.PreviewView
         android:id="@+id/cameraPreview"
         android:layout_width="match_parent"
-        android:layout_height="match_parent" />
-
-    <!-- Scanning Overlay — dim layer shown while searching -->
-    <FrameLayout
-        android:id="@+id/scanningContainer"
-        android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:visibility="gone">
-        <View
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:background="#33000000" />
-    </FrameLayout>
+        android:importantForAccessibility="no"
+        android:accessibilityLiveRegion="none" />
 
-    <!-- Status Bar (top) -->
     <LinearLayout
         android:id="@+id/statusBar"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:padding="16dp"
+        android:background="@drawable/finder_top_scrim"
         android:gravity="center_vertical"
-        android:background="#80000000">
-
-        <View
-            android:id="@+id/statusDot"
-            android:layout_width="12dp"
-            android:layout_height="12dp"
-            android:background="@drawable/dot_white"
-            android:layout_marginEnd="12dp" />
+        android:orientation="horizontal"
+        android:paddingStart="16dp"
+        android:paddingTop="32dp"
+        android:paddingEnd="8dp"
+        android:paddingBottom="8dp">
 
         <TextView
             android:id="@+id/tvStatusText"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
+            android:ellipsize="end"
+            android:lineSpacingMultiplier="1.15"
+            android:maxLines="2"
             android:text="@string/status_idle"
             android:textColor="@color/white"
-            android:textSize="14sp"
+            android:textSize="15sp"
             android:textStyle="bold" />
-    </LinearLayout>
-
-    <!-- Bottom controls -->
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_gravity="bottom"
-        android:orientation="vertical"
-        android:gravity="center_horizontal"
-        android:paddingBottom="40dp">
-
-        <TextView
-            android:id="@+id/tvTargetLabel"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginBottom="24dp"
-            android:background="@drawable/rounded_box"
-            android:paddingHorizontal="16dp"
-            android:paddingVertical="8dp"
-            android:textColor="@color/white"
-            android:textSize="16sp"
-            android:textStyle="bold"
-            android:visibility="visible" />
 
         <ImageButton
-            android:id="@+id/btnMic"
-            android:layout_width="84dp"
-            android:layout_height="84dp"
-            android:background="@drawable/mic_button_bg"
-            android:src="@android:drawable/ic_btn_speak_now"
-            android:contentDescription="@string/cd_mic"
-            android:padding="24dp"
-            android:scaleType="centerInside" />
+            android:id="@+id/btnSettings"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="@string/cd_settings"
+            android:src="@drawable/ic_settings"
+            app:tint="@color/white" />
     </LinearLayout>
 
-    <!-- Detection Box — MUST BE LAST TO BE ON TOP -->
+    <FrameLayout
+        android:id="@+id/scanningContainer"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone">
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="#26000000" />
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="16dp"
+            android:layout_marginTop="100dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <View
+                android:id="@+id/statusDot"
+                android:layout_width="10dp"
+                android:layout_height="10dp"
+                android:layout_marginEnd="8dp"
+                android:background="@drawable/dot_blue_glow" />
+
+            <TextView
+                android:id="@+id/tvScanningLabel"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textColor="@color/blue_accent"
+                android:textSize="13sp" />
+        </LinearLayout>
+    </FrameLayout>
+
     <View
         android:id="@+id/detectionBox"
         android:layout_width="1dp"
         android:layout_height="1dp"
         android:background="@drawable/detection_box_border"
+        android:importantForAccessibility="no"
         android:visibility="gone" />
 
-    <!-- Detection Label — MUST BE LAST TO BE ON TOP -->
     <TextView
         android:id="@+id/detectionLabel"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:background="@color/blue_accent"
+        android:importantForAccessibility="no"
         android:paddingHorizontal="8dp"
         android:paddingVertical="4dp"
         android:textColor="@color/white"
-        android:textSize="13sp"
+        android:textSize="12sp"
         android:textStyle="bold"
         android:visibility="gone" />
 
+    <com.vocasee.app.HandGuidanceOverlay
+        android:id="@+id/handGuidanceOverlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:gravity="center_horizontal"
+        android:orientation="vertical"
+        android:paddingBottom="28dp">
+
+        <TextView
+            android:id="@+id/tvTargetLabel"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="22dp"
+            android:background="@drawable/target_pill_bg"
+            android:paddingHorizontal="16dp"
+            android:paddingVertical="7dp"
+            android:textColor="@color/white"
+            android:textSize="14sp"
+            android:visibility="gone" />
+
+        <LinearLayout
+            android:id="@+id/detectedResultPanel"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="16dp"
+            android:layout_marginEnd="16dp"
+            android:layout_marginBottom="10dp"
+            android:background="@drawable/target_pill_dark"
+            android:gravity="center"
+            android:orientation="horizontal"
+            android:paddingStart="12dp"
+            android:paddingTop="8dp"
+            android:paddingEnd="8dp"
+            android:paddingBottom="8dp"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/tvDetectedSummary"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textColor="@color/white"
+                android:textSize="13sp" />
+
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/finderQuickActions"
+            android:layout_width="match_parent"
+            android:layout_height="86dp"
+            android:layout_marginStart="16dp"
+            android:layout_marginEnd="16dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <LinearLayout
+                android:id="@+id/btnRecent"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:clickable="true"
+                android:background="@drawable/finder_quick_action_bg"
+                android:contentDescription="@string/cd_history"
+                android:focusable="true"
+                android:gravity="center"
+                android:orientation="vertical">
+
+                <ImageView
+                    android:layout_width="30dp"
+                    android:layout_height="30dp"
+                    android:src="@drawable/ic_history"
+                    app:tint="?android:attr/textColorPrimary" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="@string/history"
+                    android:textColor="?android:attr/textColorPrimary"
+                    android:textSize="12sp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1.1"
+                android:gravity="center"
+                android:orientation="vertical">
+
+                <ImageButton
+                    android:id="@+id/btnMic"
+                    android:layout_width="68dp"
+                    android:layout_height="68dp"
+                    android:background="@drawable/mic_button_bg"
+                    android:contentDescription="@string/cd_mic"
+                    android:padding="20dp"
+                    android:scaleType="centerInside"
+                    android:src="@android:drawable/ic_btn_speak_now"
+                    app:tint="@color/white" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/btnObjects"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:clickable="true"
+                android:background="@drawable/finder_quick_action_bg"
+                android:contentDescription="@string/cd_objects"
+                android:focusable="true"
+                android:gravity="center"
+                android:orientation="vertical">
+
+                <ImageView
+                    android:layout_width="30dp"
+                    android:layout_height="30dp"
+                    android:src="@drawable/ic_apps"
+                    app:tint="?android:attr/textColorPrimary" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="@string/objects"
+                    android:textColor="?android:attr/textColorPrimary"
+                    android:textSize="12sp" />
+            </LinearLayout>
+        </LinearLayout>
+    </LinearLayout>
+
+    <FrameLayout
+        android:id="@+id/tutorialOverlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#80000000"
+        android:clickable="true"
+        android:focusable="true"
+        android:visibility="gone">
+
+        <View
+            android:id="@+id/tutorialHighlightSettings"
+            android:layout_width="58dp"
+            android:layout_height="58dp"
+            android:layout_gravity="top|end"
+            android:layout_marginTop="30dp"
+            android:layout_marginEnd="2dp"
+            android:background="@drawable/tutorial_highlight_circle"
+            android:visibility="gone" />
+
+        <View
+            android:id="@+id/tutorialHighlightRecent"
+            android:layout_width="92dp"
+            android:layout_height="84dp"
+            android:layout_gravity="bottom|start"
+            android:layout_marginStart="22dp"
+            android:layout_marginBottom="32dp"
+            android:background="@drawable/tutorial_highlight_round"
+            android:visibility="gone" />
+
+        <View
+            android:id="@+id/tutorialHighlightMic"
+            android:layout_width="102dp"
+            android:layout_height="102dp"
+            android:layout_gravity="bottom|center_horizontal"
+            android:layout_marginBottom="28dp"
+            android:background="@drawable/tutorial_highlight_circle"
+            android:visibility="gone" />
+
+        <View
+            android:id="@+id/tutorialHighlightDetection"
+            android:layout_width="230dp"
+            android:layout_height="170dp"
+            android:layout_gravity="top|center_horizontal"
+            android:layout_marginTop="156dp"
+            android:background="@drawable/tutorial_highlight_round"
+            android:visibility="gone" />
+
+        <View
+            android:id="@+id/tutorialHighlightObjects"
+            android:layout_width="92dp"
+            android:layout_height="84dp"
+            android:layout_gravity="bottom|end"
+            android:layout_marginEnd="22dp"
+            android:layout_marginBottom="32dp"
+            android:background="@drawable/tutorial_highlight_round"
+            android:visibility="gone" />
+
+        <LinearLayout
+            android:id="@+id/tutorialCard"
+            android:layout_width="280dp"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom"
+            android:layout_marginBottom="126dp"
+            android:background="@drawable/tutorial_bubble_bg"
+            android:orientation="vertical"
+            android:padding="14dp">
+
+            <TextView
+                android:id="@+id/tvTutorialTitle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textColor="@color/dark_text_primary"
+                android:textSize="18sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/tvTutorialBody"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:lineSpacingMultiplier="1.2"
+                android:textColor="@color/dark_text_secondary"
+                android:textSize="14sp" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:gravity="end"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/btnTutorialSkip"
+                    android:layout_width="wrap_content"
+                    android:layout_height="40dp"
+                    android:backgroundTint="#00000000"
+                    android:contentDescription="@string/cd_tutorial_skip"
+                    android:focusable="true"
+                    android:text="@string/tutorial_skip"
+                    android:textAllCaps="false"
+                    android:textColor="@color/dark_text_primary" />
+
+                <Button
+                    android:id="@+id/btnTutorialNext"
+                    android:layout_width="wrap_content"
+                    android:layout_height="40dp"
+                    android:layout_marginStart="8dp"
+                    android:background="@drawable/button_primary"
+                    android:contentDescription="@string/cd_tutorial_next"
+                    android:focusable="true"
+                    android:minWidth="96dp"
+                    android:text="@string/next"
+                    android:textAllCaps="false"
+                    android:textColor="@color/black"
+                android:textStyle="bold" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/tvTutorialPointer"
+            android:layout_width="48dp"
+            android:layout_height="34dp"
+            android:gravity="center"
+            android:text="▼"
+            android:textColor="#F2FFFFFF"
+            android:textSize="28sp"
+            android:textStyle="bold" />
+    </FrameLayout>
 </FrameLayout>

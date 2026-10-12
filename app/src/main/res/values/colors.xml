@@ -1,11 +1,27 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-        <color name="black">#000000</color>
+        <color name="black">#0B0D12</color>
         <color name="white">#FFFFFF</color>
-        <color name="gray_dark">#1F1F1F</color>
-        <color name="gray_medium">#424242</color>
-        <color name="gray_light">#BDBDBD</color>
+        <color name="gray_dark">#151A24</color>
+        <color name="gray_medium">#2A3344</color>
+        <color name="gray_light">#D6DEEA</color>
         <color name="blue_accent">#60A5FA</color>
         <color name="green_success">#10B981</color>
         <color name="red_listening">#EF4444</color>
+        <color name="vocasee_green">#60A5FA</color>
+        <color name="settings_black">#0B0D12</color>
+        <color name="surface_dark">#111722</color>
+        <color name="surface_border">#253047</color>
+        <color name="listening_purple">#7F77DD</color>
+        <color name="dark_text_primary">#F8FAFC</color>
+        <color name="dark_text_secondary">#D3DCEB</color>
+        <color name="dark_surface">#111722</color>
+        <color name="dark_surface_variant">#171E2A</color>
+        <color name="dark_outline">#28334A</color>
+        <color name="light_text_primary">#101828</color>
+        <color name="light_text_secondary">#475467</color>
+        <color name="light_surface">#F8FAFC</color>
+        <color name="light_surface_variant">#EEF2F7</color>
+        <color name="light_outline">#D0D8E5</color>
+        <color name="finder_mic">#1D4ED8</color>
 </resources>

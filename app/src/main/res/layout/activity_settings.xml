@@ -1,10 +1,166 @@
 <?xml version="1.0" encoding="utf-8"?>
-<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
-    xmlns:tools="http://schemas.android.com/tools"
     android:id="@+id/main"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    tools:context=".SettingsActivity">
+    android:background="?android:attr/colorBackground"
+    android:fillViewport="true">
 
-</androidx.constraintlayout.widget.ConstraintLayout>
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:paddingBottom="16dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="72dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp">
+
+            <ImageButton
+                android:id="@+id/btnBack"
+                android:layout_width="44dp"
+                android:layout_height="44dp"
+                android:background="@drawable/settings_back_button_bg"
+                android:contentDescription="@string/previous"
+                android:padding="12dp"
+                android:src="@drawable/ic_arrow_back"
+                app:tint="?android:attr/textColorPrimary" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:text="@string/action_settings"
+                android:textColor="?android:attr/textColorPrimary"
+                android:textSize="22sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <TextView style="@style/SettingsSectionLabel" android:text="@string/settings_appearance" />
+
+        <include layout="@layout/setting_switch_theme_mode" />
+        <include layout="@layout/setting_switch_text_size" />
+
+        <TextView style="@style/SettingsSectionLabel" android:text="@string/settings_feedback" />
+
+        <include layout="@layout/setting_switch_vibration" />
+        <include layout="@layout/setting_switch_voice_guide" />
+        <include layout="@layout/setting_switch_talkback_compatibility" />
+        <include layout="@layout/setting_switch_sound_effects" />
+
+        <LinearLayout style="@style/SettingsSliderRow">
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+                <ImageView
+                    style="@style/SettingsIcon"
+                    android:src="@drawable/ic_speed" />
+                <TextView style="@style/SettingsText" android:text="@string/settings_speech_speed" />
+                <TextView
+                    android:id="@+id/tvSpeechSpeedValue"
+                    style="@style/SettingsValue" />
+            </LinearLayout>
+            <SeekBar
+                android:id="@+id/seekSpeechSpeed"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginStart="38dp"
+                android:layout_marginEnd="8dp"
+                android:max="100"
+                android:progressTint="@color/vocasee_green"
+                android:thumbTint="@color/vocasee_green" />
+        </LinearLayout>
+
+        <TextView style="@style/SettingsSectionLabel" android:text="@string/settings_detection" />
+
+        <LinearLayout style="@style/SettingsSliderRow">
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+                <ImageView
+                    style="@style/SettingsIcon"
+                    android:src="@drawable/ic_tune" />
+                <TextView style="@style/SettingsText" android:text="@string/settings_sensitivity" />
+                <TextView
+                    android:id="@+id/tvSensitivityValue"
+                    style="@style/SettingsValue" />
+            </LinearLayout>
+            <SeekBar
+                android:id="@+id/seekSensitivity"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginStart="38dp"
+                android:layout_marginEnd="8dp"
+                android:max="100"
+                android:progressTint="@color/vocasee_green"
+                android:thumbTint="@color/vocasee_green" />
+        </LinearLayout>
+
+        <include layout="@layout/setting_switch_auto_flashlight" />
+        <include layout="@layout/setting_switch_confidence_overlay" />
+        <include layout="@layout/setting_switch_color_description" />
+
+        <TextView
+            android:id="@+id/settingsPrivacyDataLabel"
+            style="@style/SettingsSectionLabel"
+            android:text="@string/settings_privacy_data" />
+
+        <include
+            android:id="@+id/rowRecentReminder"
+            layout="@layout/setting_switch_recent_reminder" />
+
+        <include
+            android:id="@+id/rowSaveHistory"
+            layout="@layout/setting_switch_save_history" />
+
+        <LinearLayout
+            android:id="@+id/rowClearHistory"
+            style="@style/SettingsRow">
+
+            <ImageView
+                style="@style/SettingsIcon"
+                android:src="@drawable/ic_delete_outline" />
+
+            <TextView
+                style="@style/SettingsText"
+                android:text="@string/settings_clear_history" />
+        </LinearLayout>
+
+        <TextView style="@style/SettingsSectionLabel" android:text="@string/settings_support" />
+
+        <LinearLayout
+            android:id="@+id/rowReplayTutorial"
+            style="@style/SettingsRow">
+
+            <ImageView
+                style="@style/SettingsIcon"
+                android:src="@drawable/ic_replay" />
+
+            <TextView
+                style="@style/SettingsText"
+                android:text="@string/settings_replay_tutorial" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/rowContact"
+            style="@style/SettingsRow">
+
+            <ImageView
+                style="@style/SettingsIcon"
+                android:src="@drawable/ic_mail" />
+
+            <TextView
+                style="@style/SettingsText"
+                android:text="@string/settings_contact" />
+        </LinearLayout>
+    </LinearLayout>
+</ScrollView>

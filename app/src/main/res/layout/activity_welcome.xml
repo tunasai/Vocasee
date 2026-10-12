@@ -1,194 +1,195 @@
 <?xml version="1.0" encoding="utf-8"?>
-<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:id="@+id/main"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@color/black"
-    android:clickable="false"
-    android:focusable="false">
+    android:clickable="true"
+    android:focusable="true">
 
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:orientation="vertical"
-        android:gravity="center"
-        android:padding="24dp">
+    <ScrollView
+        android:id="@+id/welcomeScroll"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:fillViewport="true"
+        app:layout_constraintBottom_toTopOf="@id/actionArea"
+        android:clickable="true"
+        android:focusable="true"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent">
 
-        <!-- Logo -->
-        <View
-            android:layout_width="80dp"
-            android:layout_height="80dp"
-            android:layout_marginBottom="16dp"
-            android:background="@drawable/vocasee_logo" />
-
-        <!-- "Welcome to" label -->
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Welcome to"
-            android:textColor="#80FFFFFF"
-            android:textSize="16sp"
-            android:layout_marginBottom="4dp" />
-
-        <!-- Title -->
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="@string/welcome_title"
-            android:textColor="@color/white"
-            android:textSize="28sp"
-            android:textStyle="bold"
-            android:letterSpacing="0.15"
-            android:gravity="center"
-            android:layout_marginBottom="12dp" />
-
-        <!-- Description -->
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="@string/welcome_description"
-            android:textColor="#73FFFFFF"
-            android:textSize="14sp"
-            android:gravity="center"
-            android:lineSpacingMultiplier="1.5"
-            android:layout_marginBottom="20dp" />
-
-        <!-- Features Box -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:gravity="center_horizontal"
             android:orientation="vertical"
-            android:background="@drawable/rounded_box"
-            android:padding="20dp"
-            android:layout_marginBottom="24dp">
+            android:paddingStart="24dp"
+            android:paddingTop="24dp"
+            android:paddingEnd="24dp"
+            android:paddingBottom="20dp">
 
-            <!-- Features title -->
             <TextView
+                android:id="@+id/tvStepLabel"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="Key Features:"
+                android:letterSpacing="0.10"
+                android:textColor="@color/vocasee_green"
+                android:textSize="11sp"
+                android:textStyle="bold" />
+
+            <LinearLayout
+                android:id="@+id/stepDots"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:orientation="horizontal">
+
+                <View android:id="@+id/dot1" style="@style/TutorialDotStyle" />
+                <View android:id="@+id/dot2" style="@style/TutorialDotStyle" />
+                <View android:id="@+id/dot3" style="@style/TutorialDotStyle" />
+                <View android:id="@+id/dot4" style="@style/TutorialDotStyle" />
+            </LinearLayout>
+
+            <ProgressBar
+                android:id="@+id/tutorialProgress"
+                style="?android:attr/progressBarStyleHorizontal"
+                android:layout_width="match_parent"
+                android:layout_height="4dp"
+                android:layout_marginTop="16dp"
+                android:indeterminate="true"
+                android:indeterminateTint="@color/vocasee_green" />
+
+            <TextView
+                android:id="@+id/tvTutorialTitle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:gravity="center"
                 android:textColor="@color/white"
-                android:textSize="16sp"
-                android:textStyle="bold"
-                android:layout_marginBottom="12dp" />
+                android:textSize="23sp"
+                android:textStyle="bold" />
 
-            <!-- Feature 1 -->
-            <LinearLayout
+            <TextView
+                android:id="@+id/tvTutorialDescription"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:gravity="center_vertical"
-                android:layout_marginTop="4dp">
+                android:layout_marginTop="12dp"
+                android:gravity="center"
+                android:lineSpacingMultiplier="1.25"
+                android:textColor="#8AFFFFFF"
+                android:textSize="15sp" />
 
-                <ImageView
-                    android:layout_width="20dp"
-                    android:layout_height="20dp"
-                    android:src="@android:drawable/ic_search_category_default"
-                    android:tint="@color/blue_accent"
-                    android:layout_marginEnd="10dp"
-                    android:contentDescription="Search icon" />
-
-                <TextView
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="Intent-based filtering for accurate object detection"
-                    android:textSize="13sp"
-                    android:textColor="#99FFFFFF" />
-            </LinearLayout>
-
-            <!-- Feature 2 -->
             <LinearLayout
+                android:id="@+id/recentWelcomeBox"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:gravity="center_vertical"
-                android:layout_marginTop="8dp">
-
-                <ImageView
-                    android:layout_width="20dp"
-                    android:layout_height="20dp"
-                    android:src="@android:drawable/ic_menu_info_details"
-                    android:tint="@color/blue_accent"
-                    android:layout_marginEnd="10dp"
-                    android:contentDescription="Info icon" />
+                android:layout_marginTop="22dp"
+                android:background="@drawable/target_pill_dark"
+                android:orientation="vertical"
+                android:padding="16dp"
+                android:visibility="gone">
 
                 <TextView
-                    android:layout_width="0dp"
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="Detailed object descriptions including color and attributes"
-                    android:textSize="13sp"
-                    android:textColor="#99FFFFFF" />
+                    android:text="@string/welcome_recent_header"
+                    android:textColor="@color/white"
+                    android:textSize="15sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/tvWelcomeRecent"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:textColor="#D9FFFFFF"
+                    android:textSize="14sp" />
             </LinearLayout>
 
-            <!-- Feature 3 -->
             <LinearLayout
+                android:id="@+id/featureBox"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:gravity="center_vertical"
-                android:layout_marginTop="8dp">
-
-                <ImageView
-                    android:layout_width="20dp"
-                    android:layout_height="20dp"
-                    android:src="@android:drawable/ic_lock_silent_mode_off"
-                    android:tint="@color/blue_accent"
-                    android:layout_marginEnd="10dp"
-                    android:contentDescription="Vibration icon" />
+                android:layout_marginTop="22dp"
+                android:background="@drawable/rounded_box"
+                android:orientation="vertical"
+                android:padding="18dp"
+                android:visibility="gone">
 
                 <TextView
-                    android:layout_width="0dp"
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="Haptic feedback vibration when object is found"
-                    android:textSize="13sp"
-                    android:textColor="#99FFFFFF" />
+                    android:text="@string/welcome_feature_header"
+                    android:textColor="@color/white"
+                    android:textSize="16sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:lineSpacingMultiplier="1.25"
+                    android:text="@string/welcome_feature_body"
+                    android:textColor="#A8FFFFFF"
+                    android:textSize="14sp" />
             </LinearLayout>
 
-            <!-- Feature 4 -->
             <LinearLayout
+                android:id="@+id/objectListBox"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:gravity="center_vertical"
-                android:layout_marginTop="8dp">
-
-                <ImageView
-                    android:layout_width="20dp"
-                    android:layout_height="20dp"
-                    android:src="@android:drawable/ic_btn_speak_now"
-                    android:tint="@color/blue_accent"
-                    android:layout_marginEnd="10dp"
-                    android:contentDescription="Voice icon" />
+                android:layout_marginTop="16dp"
+                android:background="@drawable/rounded_box"
+                android:orientation="vertical"
+                android:padding="18dp"
+                android:visibility="gone">
 
                 <TextView
-                    android:layout_width="0dp"
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="Real-time voice guidance to object location"
-                    android:textSize="13sp"
-                    android:textColor="#99FFFFFF" />
-            </LinearLayout>
+                    android:text="@string/welcome_object_list_header"
+                    android:textColor="@color/white"
+                    android:textSize="16sp"
+                    android:textStyle="bold" />
 
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:lineSpacingMultiplier="1.25"
+                    android:text="@string/welcome_object_list_body"
+                    android:textColor="#A8FFFFFF"
+                    android:textSize="14sp" />
+            </LinearLayout>
         </LinearLayout>
+    </ScrollView>
 
-        <!-- Get Started Button -->
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnGetStarted"
+    <LinearLayout
+        android:id="@+id/actionArea"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:background="@color/black"
+        android:orientation="vertical"
+        android:paddingStart="24dp"
+        android:paddingTop="8dp"
+        android:paddingEnd="24dp"
+        android:paddingBottom="20dp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent">
+
+        <TextView
+            android:id="@+id/tvTapToStart"
             android:layout_width="match_parent"
-            android:layout_height="56dp"
-            android:text="Get Started"
-            android:textColor="@color/black"
-            android:textSize="15sp"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:paddingVertical="18dp"
+            android:text="@string/tap_screen_to_start"
+            android:textColor="@color/vocasee_green"
+            android:textSize="17sp"
             android:textStyle="bold"
-            android:letterSpacing="0.05"
-            app:backgroundTint="@color/white"
-            app:cornerRadius="50dp" />
-
-
-
+            android:visibility="visible" />
     </LinearLayout>
-</FrameLayout>
+</androidx.constraintlayout.widget.ConstraintLayout>
