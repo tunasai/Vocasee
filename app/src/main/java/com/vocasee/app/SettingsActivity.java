@@ -1,9 +1,13 @@
 package com.vocasee.app;
 
+import android.util.Log;
 import android.content.Intent;
 import android.content.ActivityNotFoundException;
 import android.net.Uri;
 import android.os.Bundle;
+import androidx.annotation.NonNull;
+import android.os.Looper;
+import android.os.Handler;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.media.AudioManager;
@@ -47,6 +51,14 @@ public class SettingsActivity extends BaseActivity {
     private TextView tvRecentReminderState;
     private TextView tvSaveHistoryState;
     private ToneGenerator toneGenerator;
+
+    private static final String STATE_FOCUS_TEXT_SIZE = "focus_text_size";
+    // TalkBack and keyboard steps arrive one at a time; apply once the user pauses.
+    private static final long TEXT_SIZE_APPLY_DELAY_MS = 800;
+    private final Handler textSizeHandler = new Handler(Looper.getMainLooper());
+    private final Runnable applyTextSize = this::recreateKeepingTextSizeFocus;
+    private boolean textSizeTouchActive = false;
+    private boolean focusTextSizeOnRecreate = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -113,13 +125,34 @@ public class SettingsActivity extends BaseActivity {
             public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
                 AppPreferences.setTextSizePercent(SettingsActivity.this, progress);
                 updateValueLabels();
+                // Touch drags apply on release; other changes (TalkBack, keyboard) never
+                // send a touch event, so apply them after a short pause.
+                if (fromUser && !textSizeTouchActive) {
+                    textSizeHandler.removeCallbacks(applyTextSize);
+                    textSizeHandler.postDelayed(applyTextSize, TEXT_SIZE_APPLY_DELAY_MS);
+                }
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar seekBar) {
+                textSizeTouchActive = true;
+                textSizeHandler.removeCallbacks(applyTextSize);
             }
 
             @Override
             public void onStopTrackingTouch(SeekBar seekBar) {
-                recreate();
+                textSizeTouchActive = false;
+                recreateKeepingTextSizeFocus();
             }
         });
+        if (savedInstanceState != null && savedInstanceState.getBoolean(STATE_FOCUS_TEXT_SIZE)) {
+            // Return TalkBack and keyboard focus to the slider instead of the top of the screen.
+            seekTextSize.post(() -> {
+                seekTextSize.requestFocus();
+                seekTextSize.performAccessibilityAction(
+                        android.view.accessibility.AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS, null);
+            });
+        }
 
         switchVibration.setOnCheckedChangeListener((buttonView, checked) -> {
             AppPreferences.setVibrationEnabled(this, checked);
@@ -257,14 +290,34 @@ public class SettingsActivity extends BaseActivity {
         @Override public void onStopTrackingTouch(SeekBar seekBar) {}
     }
 
+    private void recreateKeepingTextSizeFocus() {
+        textSizeHandler.removeCallbacks(applyTextSize);
+        if (isFinishing() || isDestroyed()) return;
+        focusTextSizeOnRecreate = true;
+        recreate();
+    }
+
+    @Override
+    protected void onSaveInstanceState(@NonNull Bundle outState) {
+        super.onSaveInstanceState(outState);
+        outState.putBoolean(STATE_FOCUS_TEXT_SIZE, focusTextSizeOnRecreate);
+    }
+
     private void refreshToneGenerator() {
         if (toneGenerator != null) toneGenerator.release();
-        toneGenerator = new ToneGenerator(
-                AudioManager.STREAM_NOTIFICATION, AppPreferences.getVolumePercent(this));
+        toneGenerator = null;
+        try {
+            toneGenerator = new ToneGenerator(
+                    AudioManager.STREAM_NOTIFICATION, AppPreferences.getVolumePercent(this));
+        } catch (RuntimeException e) {
+            // Thrown when the audio system has no free tone resources; the preview beep is optional.
+            Log.w("SettingsActivity", "Tone generator unavailable", e);
+        }
     }
 
     @Override
     protected void onDestroy() {
+        textSizeHandler.removeCallbacks(applyTextSize);
         if (toneGenerator != null) toneGenerator.release();
         super.onDestroy();
     }

@@ -8,6 +8,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.speech.tts.TextToSpeech;
 import android.view.View;
+import android.view.accessibility.AccessibilityManager;
 
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
@@ -105,12 +106,21 @@ public class WelcomeActivity extends BaseActivity {
     }
 
     private void speak(String text) {
+        // TalkBack reads this screen's welcome text itself when it opens; speaking the
+        // same welcome over it made both voices say it at once.
+        if (isTalkBackActive()) return;
         if (textToSpeech != null && AppPreferences.isVoiceGuideEnabled(this)) {
             Bundle params = new Bundle();
             params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME,
                     AppPreferences.getVolumePercent(this) / 100f);
             textToSpeech.speak(text, TextToSpeech.QUEUE_FLUSH, params, "welcome_hub");
         }
+    }
+
+    private boolean isTalkBackActive() {
+        AccessibilityManager manager =
+                (AccessibilityManager) getSystemService(ACCESSIBILITY_SERVICE);
+        return manager != null && manager.isEnabled() && manager.isTouchExplorationEnabled();
     }
 
     @Override

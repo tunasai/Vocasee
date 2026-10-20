@@ -1,3 +1,5 @@
 <resources>
     <dimen name="fab_margin">16dp</dimen>
+    <!-- Space between the phone's own status bar and the Finder status bar. -->
+    <dimen name="finder_status_bar_gap">4dp</dimen>
 </resources>

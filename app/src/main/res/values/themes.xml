@@ -112,4 +112,14 @@
         <item name="android:layout_marginEnd">3dp</item>
         <item name="android:background">@color/listening_purple</item>
     </style>
+    <style name="ResultCardDetail">
+        <item name="android:layout_width">wrap_content</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:layout_marginTop">1dp</item>
+        <item name="android:textColor">@color/result_card_detail</item>
+        <item name="android:textSize">13sp</item>
+        <!-- Keeps the text readable over the see-through card. -->
+        <item name="android:shadowColor">#CC000000</item>
+        <item name="android:shadowRadius">3</item>
+    </style>
 </resources>

@@ -3,10 +3,7 @@
 
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
-    <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission android:name="android.permission.FLASHLIGHT" />
     <uses-permission android:name="android.permission.VIBRATE" />
-    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <uses-feature android:name="android.hardware.camera" android:required="true" />
 
@@ -25,10 +22,6 @@
 
         <!-- OPPO/OnePlus statistics provider (already present) -->
         <package android:name="com.oplus.statistics.provider" />
-
-        <intent>
-            <action android:name="android.intent.action.MAIN" />
-        </intent>
     </queries>
 
     <application
@@ -45,12 +38,16 @@
         <uses-native-library android:name="libOpenCL-car.so" android:required="false" />
         <uses-native-library android:name="libOpenCL-pixel.so" android:required="false" />
 
-        <activity android:name=".SettingsActivity"  android:exported="false" />
-        <activity android:name=".RecentSearchesActivity" android:exported="false" />
-        <activity android:name=".ObjectListActivity" android:exported="false" />
-        <activity android:name=".FinderActivity"    android:exported="false" />
-        <activity android:name=".WelcomeActivity"   android:exported="false" />
+        <!-- Each screen has its own short label so TalkBack never announces the app name
+             as the window title on every screen change. -->
+        <activity android:name=".SettingsActivity"  android:exported="false" android:label="@string/action_settings" />
+        <activity android:name=".RecentSearchesActivity" android:exported="false" android:label="@string/recent_searches" />
+        <activity android:name=".ObjectListActivity" android:exported="false" android:label="@string/object_list" />
+        <activity android:name=".FinderActivity"    android:exported="false" android:label="@string/title_finder" />
+        <activity android:name=".WelcomeActivity"   android:exported="false" android:label="@string/title_welcome" />
 
+        <!-- The launcher icon uses this activity's label, so it keeps the app name here;
+             LoadingActivity sets its window title to "Loading" at runtime. -->
         <activity
             android:name=".LoadingActivity"
             android:exported="true">

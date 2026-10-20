@@ -32,6 +32,8 @@ public class LoadingActivity extends BaseActivity {
         super.onCreate(savedInstanceState);
         binding = ActivityLoadingBinding.inflate(getLayoutInflater());
         setContentView(binding.getRoot());
+        // The manifest label stays the app name for the launcher icon; TalkBack reads this instead.
+        setTitle(R.string.title_loading);
 
         executor = Executors.newSingleThreadExecutor();
         animateProgress();
@@ -56,13 +58,18 @@ public class LoadingActivity extends BaseActivity {
             TFLiteDetector warmupDetector = null;
             try {
                 warmupDetector = new TFLiteDetector(this, "model_24class_yolo26n.tflite");
-            } catch (IOException ignored) {
+                // FinderActivity takes this instead of loading the same model again.
+                DetectorPreloader.offer(warmupDetector);
+                warmupDetector = null;
+            } catch (IOException | RuntimeException ignored) {
                 // Finder reports a model issue only if the user starts a detection search.
             } finally {
                 if (warmupDetector != null) warmupDetector.close();
             }
 
             handler.postDelayed(() -> {
+                // The task can finish after onDestroy removed pending callbacks.
+                if (isFinishing() || isDestroyed()) return;
                 updateProgress(100);
                 Intent intent;
                 if (AppPreferences.isTutorialDone(this)) {

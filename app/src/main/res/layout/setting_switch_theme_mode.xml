@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    style="@style/SettingsRow">
+
+    <ImageView
+        style="@style/SettingsIcon"
+        android:src="@drawable/ic_dark_mode" />
+
+    <TextView
+        style="@style/SettingsText"
+        android:text="@string/settings_theme_mode" />
+
+    <Spinner
+        android:id="@+id/spinnerThemeMode"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:entries="@array/theme_modes" />
+</LinearLayout>

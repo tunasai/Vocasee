@@ -1,15 +1,24 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!-- Existing app strings -->
-    <string name="app_name">VOCASEE</string>
-    <string name="welcome_title">Welcome to\nVOCASEE</string>
-    <string name="welcome_description">VOCASEE helps visually impaired users locate selected indoor household items through voice commands, camera-based object detection, audio guidance, haptic feedback, and hand proximity guidance.</string>
-    <string name="welcome_title_plain">Welcome to VOCASEE</string>
+    <!-- Mixed case on purpose: TalkBack spells an all-caps "VOCASEE" letter by letter.
+         Only the launcher icon uses this; every screen has its own short title below. -->
+    <string name="app_name">VocaSee</string>
+    <!-- Visual-only wordmark. Views showing it must set contentDescription to app_name. -->
+    <string name="app_name_display" translatable="false">VOCASEE</string>
+    <!-- Window titles. TalkBack reads these whenever a screen opens or regains focus
+         (e.g. after the voice dialog closes), so they stay short and carry no branding. -->
+    <string name="title_finder">Object finder</string>
+    <string name="title_welcome">Welcome</string>
+    <string name="title_loading">Loading</string>
+    <string name="welcome_title">Welcome to\nVocaSee</string>
+    <string name="welcome_description">This app helps visually impaired users locate selected indoor household items through voice commands, camera-based object detection, audio guidance, haptic feedback, and hand proximity guidance.</string>
+    <string name="welcome_title_plain">Welcome to VocaSee</string>
     <string name="splash_tagline">VOICE - GUIDED. OBJECT. FINDER.</string>
     <string name="splash_loading_model">Loading on-device model...</string>
     <string name="tap_screen_to_start">Tap the screen to start</string>
     <string name="tts_welcome_hub">Welcome to VocaSee. This app helps you find indoor household objects using voice commands, camera detection, audio guidance, vibration, and hand proximity guidance. It currently detects 24 objects. Tap the screen to start.</string>
-    <string name="tts_tutorial_complete">Tutorial complete. VocaSee is ready. Tap anywhere or wait to open the camera.</string>
+    <string name="tts_tutorial_complete">Tutorial complete. Ready to search. Tap anywhere or wait to open the camera.</string>
     <string name="welcome_feature_header">Key Features</string>
     <string name="welcome_object_list_header">Supported Objects</string>
     <string name="welcome_object_list_body">Backpack, book, cup, glasses, headset, key, phone, remote, wallet, water bottle, body spray, card, charger, comb, flashlight, glasses case, medicine, nail clipper, shoe, watch, body scrub, cane, lighter, and towel.</string>
@@ -35,7 +44,7 @@
 
     <string name="target_looking">Looking for: %1$s</string>
     <string name="target_not_found">Not found: %1$s</string>
-    <string name="tts_detection_timeout">Detection timeout. Object not found. Please find in a different area.</string>
+    <string name="tts_detection_timeout">I could not find the object here. Try a different area, then tap the microphone button to search again.</string>
 
     <string name="tts_verification">Did you find what you were looking for, or is this detection correct?</string>
     <string name="tts_lost">Object not visible. Please pan the camera around.</string>
@@ -46,7 +55,7 @@
     <string name="tts_frequent_prompt">Your frequently searched objects are %1$s, %2$s, and %3$s. What would you like to find today?</string>
     <string name="tts_prompt_another">Do you want to find another object?</string>
     <string name="tts_instructions_restart">Okay. Tap the microphone anytime to start a new search.</string>
-    <string name="tts_scanning">Okay, I will look for %1$s. Move your phone slowly and keep the camera pointed around you.</string>
+    <string name="tts_scanning">Okay, looking for the %1$s. Move your phone slowly around you.</string>
     <string name="tts_not_predefined">Sorry, %1$s is not in the supported object list.</string>
     <string name="tts_no_hear">Could not hear you. Please try again.</string>
 
@@ -121,4 +130,14 @@
         <item>System Default</item>
     </string-array>
 
+    <string name="status_ready">Ready</string>
+    <string name="status_detected">%1$s Detected!</string>
+    <string name="status_no_object_found">No %1$s found.</string>
+    <string name="status_unsupported">Unsupported object.</string>
+    <string name="status_done">Done: %1$s reached.</string>
+    <string name="finder_ready_announcement">Finder mode ready. Double tap microphone button to search.</string>
+    <string name="result_color">Color: %1$s</string>
+    <string name="result_text">Text: %1$s</string>
+    <string name="result_confidence">Confidence: %1$d%%</string>
+    <string name="result_proximity">Proximity: %1$s</string>
 </resources>

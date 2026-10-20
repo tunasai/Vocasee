@@ -39,6 +39,11 @@ import androidx.camera.core.Camera;
 import androidx.camera.core.ImageAnalysis;
 import androidx.camera.core.ImageProxy;
 import androidx.camera.core.Preview;
+import androidx.camera.core.UseCaseGroup;
+import androidx.camera.core.ViewPort;
+import androidx.camera.core.resolutionselector.AspectRatioStrategy;
+import androidx.camera.core.resolutionselector.ResolutionSelector;
+import androidx.camera.core.resolutionselector.ResolutionStrategy;
 import androidx.camera.lifecycle.ProcessCameraProvider;
 import androidx.core.content.ContextCompat;
 
@@ -52,14 +57,6 @@ import com.google.mediapipe.tasks.vision.core.RunningMode;
 import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarker;
 import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarkerResult;
 import com.vocasee.app.databinding.ActivityFinderBinding;
-
-import org.opencv.android.OpenCVLoader;
-import org.opencv.android.Utils;
-import org.opencv.core.Core;
-import org.opencv.core.CvType;
-import org.opencv.core.Mat;
-import org.opencv.core.TermCriteria;
-import org.opencv.imgproc.Imgproc;
 
 import java.io.IOException;
 import java.io.File;
@@ -107,18 +104,55 @@ public class FinderActivity extends BaseActivity {
     private static final int LUMA_SAMPLE_COLUMNS = 8;
     private static final int LUMA_SAMPLE_ROWS = 6;
     private static final long INFERENCE_INTERVAL_MS       = 120;
-    private static final int  DETECTION_LOST_MISS_FRAMES         = 20;
-    // A hand naturally hides the target during retrieval. Keep its last verified
-    // box alive long enough for hand guidance and the spoken confirmation to finish.
-    private static final int  LOCKED_DETECTION_LOST_MISS_FRAMES  = 300;
-    private static final long LOCKED_DETECTION_LOST_TIMEOUT_MS   = 30000;
-    private static final int  HAND_GUIDANCE_LOST_MISS_FRAMES     = 600;
+    // How long a missing target (with no hand over it) is still tracked before the search
+    // restarts. Last seen at the frame edge, it most likely left the view, so this is short.
+    // Last seen inside the view, the detector usually just missed a few frames because the
+    // object or phone moved, so tracking holds on instead of rescanning from scratch.
+    private static final long TRACK_LOST_AT_EDGE_MS              = 1200;
+    private static final long TRACK_LOST_IN_VIEW_MS              = 4000;
+    private static final float FRAME_EDGE_MARGIN_RATIO           = 0.04f;
+    // An established track accepts weaker detections. They are only matched near the last
+    // box (selectContinuingDetection), so this cannot jump to a different object.
+    private static final float CONTINUING_TRACK_CONFIDENCE       = 0.15f;
+    // Largest center shift (fraction of the preview diagonal) still accepted as the same
+    // tracked object between two detector frames.
+    private static final float CONTINUING_MAX_SHIFT              = 0.30f;
+    // First acquisition: candidates down to this share of the user's threshold count, but
+    // must appear ACQUIRE_HITS times in roughly the same place (within ACQUIRE_WINDOW_MS
+    // between hits), unless one detection scores ACQUIRE_STRONG_MARGIN above the threshold.
+    private static final float ACQUIRE_CANDIDATE_FACTOR          = 0.85f;
+    private static final int   ACQUIRE_HITS                      = 2;
+    private static final long  ACQUIRE_WINDOW_MS                 = 1200;
+    private static final float ACQUIRE_MAX_SHIFT                 = 0.25f;
+    private static final float ACQUIRE_STRONG_MARGIN             = 0.20f;
+    // Re-finding the target this soon after losing it resumes quietly instead of replaying
+    // the full "found" announcement.
+    private static final long REACQUIRE_QUIET_MS                 = 10000;
+    // A hand at the object's last position hides it during the reach. That is the
+    // retrieval itself, so the box is kept for hand guidance and the holding question.
     private static final long HAND_GUIDANCE_RETENTION_MS         = 60000;
     private static final long CONFIRMATION_MIN_RETAIN_MS         = 5000;
-    // The visible blue box must represent a recent live YOLO result. The longer
-    // retained box is still available internally for hand guidance and haptics.
-    private static final long LIVE_BOX_GRACE_MS                  = 7000;
-    private static final float TRACKING_SMOOTHING_ALPHA    = 0.62f;
+    // The visible blue box bridges one or two missed detector frames (the model runs at
+    // about 2.5 frames per second on test phones), so slight motion does not make it
+    // flicker. An object that leaves the view clears shortly after.
+    // A box hidden by the user's hand stays, at its last clear position.
+    private static final long LIVE_BOX_GRACE_MS                  = 1200;
+    // Writes a PNG of the model input every 5 s on the camera thread, which stalls the box.
+    // Turn on only to compare the exact YOLO input in Colab.
+    private static final boolean SAVE_MODEL_INPUT_DIAGNOSTIC     = false;
+    // Gamma + CLAHE on the detector input in dark, washed-out or flat scenes and for
+    // glare-prone targets (see maybeEnhanceForDetection). Set false to compare without it.
+    private static final boolean DETECTION_ENHANCEMENT_ENABLED   = true;
+    private static final float TRACKING_SMOOTHING_ALPHA    = 0.75f;
+    // Box motion prediction through short detector dropouts (see predictBox).
+    private static final float VELOCITY_SMOOTHING           = 0.5f;
+    private static final long  VELOCITY_MAX_GAP_MS          = 1500;
+    private static final long  PREDICTION_MAX_MS            = 600;
+    private static final float PREDICTION_DAMPING           = 0.7f;
+    // The box glides to each new detector position instead of jumping (about 2.5 updates/s).
+    private static final long  BOX_ANIMATION_MS             = 180;
+    // Exposure is re-metered on the tracked object at most this often.
+    private static final long  TARGET_METERING_INTERVAL_MS  = 3000;
     private static final float TRACKING_FAST_ALPHA         = 1.0f;
     private static final float TRACKING_FAST_MOVE_RATIO    = 0.10f;
     private static final float TRACKING_FAST_SIZE_RATIO    = 0.18f;
@@ -129,14 +163,31 @@ public class FinderActivity extends BaseActivity {
     private static final long MIC_START_DELAY_MS = 900;
     // TalkBack first announces the focused microphone control. Starting Android's
     // recognizer immediately can make it transcribe that speaker audio as a command.
-    private static final long TALKBACK_MIC_START_DELAY_MS = 10000;
+    // TalkBack gives no "finished reading" signal, so the microphone waits for an estimate
+    // of how long TalkBack takes to read the voice-search window (or a re-prompt).
+    private static final long TALKBACK_MIN_READING_MS = 2500;
+    private static final long TALKBACK_MS_PER_CHAR = 75;
+    private static final long READY_ANNOUNCEMENT_DELAY_MS = 1200;
+    // TalkBack Companion: the voice modal is hidden from TalkBack, so only the beep
+    // (180 ms) has to finish before the microphone opens.
+    private static final long COMPANION_MIC_START_DELAY_MS = 400;
     private static final long STARTUP_PROMPT_DELAY_MS = 5000;
+    private static final long STARTUP_PROMPT_DELAY_NO_TALKBACK_MS = 1200;
     private static final long MIC_RETRY_DELAY_MS = 500;
     private static final long MIC_READY_TIMEOUT_MS = 3500;
+    // After this many spoken re-prompts with no usable answer, the microphone closes and
+    // the user is told how to start again, instead of it reopening indefinitely.
+    private static final int  VOICE_MAX_REPROMPTS = 2;
+    private static final long MIN_LISTEN_BEFORE_REPROMPT_MS = 1500;
 
     private static final long  RADAR_FAR_INTERVAL_MS    = 900;
     private static final long  RADAR_CLOSE_INTERVAL_MS  = 60;
     private static final int   RADAR_MIN_AMPLITUDE      = 55;
+    private static final int   SOUND_RADAR_TONE         = ToneGenerator.TONE_CDMA_PIP;
+    private static final int   SOUND_RADAR_CENTER_TONE  = ToneGenerator.TONE_PROP_BEEP2;
+    private static final long  SOUND_RADAR_MAX_TICK_MS  = 45;
+    // A tick is skipped while the listening beep or found tone (180 ms) is still playing.
+    private static final long  SOUND_EFFECT_CLEAR_MS    = 220;
     private static final int   RADAR_MAX_AMPLITUDE      = 190;
     private static final int   RADAR_CENTER_AMPLITUDE   = 255;
     private static final float RADAR_CENTER_TOLERANCE   = 0.14f;
@@ -145,6 +196,13 @@ public class FinderActivity extends BaseActivity {
     private static final float RADAR_FULL_WIDTH_RATIO   = 0.82f;
     private static final float RADAR_TOO_CLOSE_AREA      = 0.70f;
     private static final float RADAR_TOO_CLOSE_WIDTH     = 0.93f;
+    // The reach instruction starts here, earlier than RADAR_REACHED_PROXIMITY, so the user
+    // reaches from a distance where the camera still sees the object past the hand.
+    private static final float RADAR_REACH_PROMPT_PROXIMITY = 0.20f;
+    private static final float RADAR_REACH_PROMPT_WIDTH     = 0.62f;
+    // Leaving an approach band needs the ratio to fall this far below its entry threshold,
+    // so jitter at a boundary does not repeat the band's prompt.
+    private static final float APPROACH_BAND_HYSTERESIS = 0.8f;
     // A detected object must remain close in consecutive live frames before VocaSee
     // asks the user to reach toward it. It never confirms retrieval from radar alone.
     private static final long  RADAR_REACH_STABLE_MS = 1200;
@@ -153,29 +211,74 @@ public class FinderActivity extends BaseActivity {
     private static final boolean HAND_TO_OBJECT_GUIDANCE_ENABLED = true;
     private static final boolean HAND_RETRIEVAL_CONFIRMATION_ENABLED = true;
     private static final String HAND_LANDMARKER_TASK = "hand_landmarker.task";
-    private static final float HAND_APPROACHING_DISTANCE = 0.24f;
-    private static final float HAND_HOLDING_DISTANCE = 0.20f;
-    private static final float HAND_FAR_DISTANCE = 0.42f;
-    // A single camera cannot establish depth from overlap alone. These guards reject a
-    // foreground hand that fills the view and require a short, stable contact pattern.
-    private static final float HAND_CONTACT_MAX_AREA_RATIO = 20.0f;
+    // Hand guidance measures the gap between the hand's and the object's box edges as a
+    // fraction of the preview diagonal (center distance overstated it for large objects).
+    private static final float HAND_FAR_GAP = 0.18f;
+    private static final float HAND_NEAR_GAP = 0.08f;
+    // The reach zone is a buffer around the object. A hand entering it switches guidance
+    // to "ready to grab" while the object is still visible, before the hand covers it.
+    private static final float HAND_REACH_ZONE_RATIO = 0.35f;
+    private static final int   HAND_REACH_ZONE_MIN_DP = 36;
+    // The "ready to grab" cue is spoken again only after the hand clearly left the zone.
+    private static final float HAND_REACH_ZONE_REARM_GAP = 0.10f;
+    // A repeat of the same direction is skipped while the hand keeps closing the gap.
+    private static final float HAND_PROGRESS_GAP = 0.03f;
+    // An axis change (left/right versus higher/lower) needs the new axis to clearly dominate,
+    // so a diagonal approach does not alternate between the two directions.
+    private static final float HAND_DIRECTION_SWITCH_RATIO = 1.3f;
+    // Share of the object box the hand must overlap before the contact timer starts.
+    private static final float HAND_CONTACT_MIN_OVERLAP = 0.15f;
+    // A single camera cannot establish depth from overlap alone. Comparing the hand's
+    // apparent size with the object's, against their real sizes, gives their depth ratio:
+    // above this the hand is still well in front of the object, so it is not touching it.
+    // (This replaces "hand area > 20x object area", which flagged every normal reach
+    // toward a small object as a hand blocking the camera.)
+    private static final float HAND_TYPICAL_SIZE_M = 0.19f;
+    private static final float HAND_IN_FRONT_DEPTH_RATIO = 3.0f;
+    // Only a hand filling this much of the view is genuinely too close to the camera.
+    private static final float HAND_BLOCKS_CAMERA_AREA = 0.45f;
     // Ask while the target is still partly visible. Waiting for near-total coverage
     // means the hand often hides the target before VocaSee can ask its question.
     private static final float HAND_RETRIEVAL_OBJECT_COVERAGE = 0.12f;
     private static final float HAND_COVERS_OBJECT_RATIO = 0.55f;
     private static final long HAND_CONTACT_STABLE_MS = 650;
+    // Voice guide off: the search finishes by itself after this much steady contact. Longer
+    // than HAND_CONTACT_STABLE_MS because there is no "no" answer to undo a wrong finish.
+    private static final long SILENT_FINISH_CONTACT_MS = 2000;
+    private static final long FINISH_VIBRATION_MS = 600;
+    private static final int  FINISH_TONE_MS = 600;
     private static final long RETRIEVAL_READY_DELAY_MS = 1800;
     private static final long HAND_CONTACT_RETAIN_MS = 1700;
     private static final long HAND_MISSING_GRACE_MS = 900;
-    private static final long HAND_OCCLUSION_MAX_AFTER_LAST_SEEN_MS = 3000;
-    private static final long HAND_OCCLUSION_RETAIN_MS = 6500;
+    // MediaPipe often loses a hand that is wrapped around or close over the object. A hand
+    // seen at the target this recently still counts as reaching it.
+    private static final long HAND_INTERACTION_RETAIN_MS = 6500;
+    // MediaPipe and YOLO both flicker while a hand closes around an object. A short
+    // dropout must not restart the contact timer that leads to the holding question.
+    private static final long HAND_CONTACT_DROPOUT_MS = 400;
+    // Once the user starts the final reach, approach prompts stay off until the object has
+    // been continuously visible with no hand for this long (the user really withdrew).
+    private static final long RETRIEVAL_RELEASE_MS = 5000;
+    private static final long READY_TO_GRAB_CUE_INTERVAL_MS = 2500;
+    private static final String[] APPROACH_PROMPT_CATEGORIES = {
+            "approach_progress", "approach_still_far" };
+    private static final String[] ALL_GUIDANCE_PROMPT_CATEGORIES = {
+            "approach_progress", "approach_still_far", "reach_instruction",
+            "hand_guidance_start", "hand_guidance" };
     // Start looking for a hand before the object reaches the final radar threshold.
     // This lets hand guidance be ready before the hand crosses the object.
-    private static final float HAND_GUIDANCE_ACTIVATION_PROXIMITY = 0.16f;
-    private static final float HAND_GUIDANCE_ACTIVATION_WIDTH_RATIO = 0.40f;
-    private static final long HAND_GUIDANCE_TTS_INTERVAL_MS = 3000;
+    private static final float HAND_GUIDANCE_ACTIVATION_PROXIMITY = 0.10f;
+    private static final float HAND_GUIDANCE_ACTIVATION_WIDTH_RATIO = 0.30f;
+    // Box size alone cannot tell a large object far away from a small one nearby. Hand
+    // guidance and the reach prompt also need the object's estimated distance (from its
+    // typical real size) to be within arm's reach of the user holding the phone.
+    private static final float HAND_GUIDANCE_MAX_DISTANCE_M = 0.80f;
+    private static final float REACH_PROMPT_MAX_DISTANCE_M = 0.70f;
+    // Focal length as a fraction of the long frame side for a typical main phone camera
+    // (about 26 mm equivalent). Replaced by the real lens value once the camera is bound.
+    private static final float DEFAULT_FOCAL_TO_LONG_SIDE = 0.75f;
+    private static final long HAND_GUIDANCE_TTS_INTERVAL_MS = 2000;
     private static final long HAND_GUIDANCE_REPEAT_SAME_MS = 6500;
-    private static final long HAND_OCCLUSION_TTS_INTERVAL_MS = 4500;
     // Hand guidance remains responsive at this rate, while leaving enough CPU time
     // for the visible YOLO box to update on consecutive camera frames.
     private static final long HAND_DETECTION_INTERVAL_MS = 120;
@@ -187,50 +290,12 @@ public class FinderActivity extends BaseActivity {
     private static final long RETRIEVAL_PROMPT_DELAY_MS = 2500;
     private static final int COLOR_HISTORY_SIZE = 7;
     private static final int COLOR_STABLE_MIN_COUNT = 4;
-    private static final int COLOR_MIN_SAMPLES = 8;
-    private static final int COLOR_MIN_CLUSTER_SAMPLES = 3;
-    private static final float COLOR_INNER_ELLIPSE_RADIUS = 0.42f;
-    private static final float COLOR_DARK_PIXEL_THRESHOLD = 0.055f;
-    private static final int COLOR_WHITE_CHANNEL_MIN = 210;
-    private static final int COLOR_WHITE_MAX_CHANNEL_SPREAD = 18;
+    private static final int COLOR_FIRST_STABLE_COUNT = 3;
     private static final long OCR_INTERVAL_MS = 7000;
     private static final long OCR_INITIAL_DELAY_MS = 3500;
-    private static final long COLOR_SAMPLE_INTERVAL_MS = 400;
-    private static final String COLOR_UNCLEAR = "unclear";
-    private static final String[][] ALIASES = {
-            { "hair comb", "comb" },
-            { "headphones", "headset" },
-            { "headphone", "headset" },
-            { "earphones", "headset" },
-            { "walking cane", "cane" },
-            { "walking stick", "cane" },
-            { "spectacles", "glasses" },
-            { "eyeglasses", "glasses" },
-            { "keys", "key" },
-            { "remote control", "remote" },
-            { "tv remote", "remote" },
-            { "bottle", "water bottle" },
-            { "body mist", "body spray" },
-            { "flash light", "flashlight" },
-            { "spectacle case", "glasses case" },
-            { "nail cutter", "nail clipper" },
-            { "shoes", "shoe" },
-            { "sneakers", "shoe" },
-            { "wristwatch", "watch" },
-            { "charger cable", "charger" },
-            { "charging cable", "charger" },
-            { "usb charger", "charger" },
-            { "mobile phone", "phone" },
-            { "cell phone", "phone" },
-            { "cellphone", "phone" },
-            { "smartphone", "phone" },
-            { "gamot", "medicine" },
-            { "pill", "medicine" },
-            { "pills", "medicine" },
-            { "tablet", "medicine" },
-            { "capsule", "medicine" },
-            { "medication", "medicine" }
-    };
+    // The HSV classifier is cheap, so sample often enough to settle within about a second.
+    private static final long COLOR_SAMPLE_INTERVAL_MS = 300;
+    private static final String COLOR_UNCLEAR = ColorClassifier.UNCLEAR;
 
     private enum DetectionState { IDLE, SCANNING, FOUND, NOT_IN_CLASSES }
     private enum VoiceMode { OBJECT, CONFIRMATION }
@@ -241,13 +306,33 @@ public class FinderActivity extends BaseActivity {
     private BottomSheetDialog     voiceModal;
     private ExecutorService       cameraExecutor;
     private ExecutorService       handExecutor;
-    private TFLiteDetector        detector;
+    // Created and closed on cameraExecutor; read on the main thread.
+    private volatile TFLiteDetector detector;
     private volatile boolean      detectorLoadFailed;
+    // Camera thread only.
     private OnDeviceTextRecognizer onDeviceTextRecognizer;
-    private HandLandmarker        handLandmarker;
+    // Created on cameraExecutor, used on handExecutor, closed on handExecutor.
+    private volatile HandLandmarker handLandmarker;
+    // Set in onDestroy; analyzer frames still queued afterwards are dropped.
+    private volatile boolean      destroyed = false;
     private Vibrator              vibrator;
     private Camera                camera;
+    private boolean               cameraStartInFlight = false;
     private ToneGenerator         toneGenerator;
+    // The sound radar has its own generator: startTone() on a shared one would cut off
+    // the listening beep and found tone, and those would cut off the ticks.
+    private ToneGenerator         radarToneGenerator;
+
+    private static final int PERMISSION_REQUEST_CODE = 101;
+    private static final long MIC_NOTICE_INTERVAL_MS = 30_000;
+    private boolean permissionRequestPending = false;
+    // Permissions the user denied with "don't ask again"; only app settings can grant them now.
+    private final Set<String> blockedPermissions = new HashSet<>();
+    // Object the user asked for while camera access was missing; searched once it is granted.
+    private String pendingSearchAfterCameraGrant;
+    // Object requested while the detection model was still loading; searched once it is ready.
+    private String pendingSearchAfterModelLoad;
+    private long lastMicUnavailableNoticeAt = -MIC_NOTICE_INTERVAL_MS;
     private View[]                voiceWaveBars;
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -255,6 +340,14 @@ public class FinderActivity extends BaseActivity {
     private final Runnable hapticRadarRunnable = new Runnable() {
         @Override public void run() {
             pulseHapticRadar();
+        }
+    };
+    // Runs beside the vibration radar on its own handler, so turning either off (or
+    // hand guidance taking over the vibrator) never stops or delays the other.
+    private final Handler soundRadarHandler = new Handler(Looper.getMainLooper());
+    private final Runnable soundRadarRunnable = new Runnable() {
+        @Override public void run() {
+            tickSoundRadar();
         }
     };
     private final Runnable searchReminderRunnable = new Runnable() {
@@ -266,25 +359,49 @@ public class FinderActivity extends BaseActivity {
     private boolean        isProcessingResult = false;
     private VoiceMode      voiceMode = VoiceMode.OBJECT;
     private long           voiceTurnToken = 0;
-    private String         targetObject  = null;
-    private String         targetTFLabel = null;
+    // Written on the main thread, read by the camera thread.
+    private volatile String targetObject  = null;
+    private volatile String targetTFLabel = null;
     private volatile DetectionState currentState  = DetectionState.IDLE;
-    private String         lastSpokenColor = null;
+    // Written on both the camera and main threads.
+    private volatile String lastSpokenColor = null;
     private String         lastSpokenLabel = null;
     private String         announcedFoundColor = null;
     private String         announcedFoundText = null;
     private long           foundFeedbackStartedAt = 0;
     private boolean        userSpeechStarted = false;
     private boolean        recognizerReadyForSpeech = false;
+    // Spoken re-prompts given in the current microphone window after hearing nothing usable.
+    private int            voiceRepromptCount = 0;
+    private long           recognizerReadyAt = 0;
+    private TextView       activeVoiceInput = null;
+    private boolean        voiceModalHiddenFromTalkBack = false;
+    private StatusState    lastStatusState = null;
+    private String         lastStatusObject = null;
+    private boolean        readyAnnouncementMade = false;
+    private boolean        beepWhenMicReady = false;
     private long           recognizerAttemptToken = 0;
-    private boolean        openCvReady = false;
     private float          appliedTextScale;
     private int            tutorialStep = 0;
     private boolean        tutorialShowing = false;
     private boolean        talkBackVoiceGuideNoticeShown = false;
+    private boolean        guidanceAccessibilityModeActive = false;
+    // With the on-screen controls hidden from TalkBack during guidance, Back is the
+    // TalkBack user's way out: it stops the search instead of leaving the screen.
+    private final androidx.activity.OnBackPressedCallback stopGuidanceBackCallback =
+            new androidx.activity.OnBackPressedCallback(false) {
+                @Override public void handleOnBackPressed() {
+                    cancelActiveSearch();
+                    // This Back handler exists only with TalkBack on, and the search is now over.
+                    speakOutsideSearch("Search stopped. The microphone and other controls are available again.");
+                }
+            };
     private boolean        hapticRadarActive = false;
+    private boolean        soundRadarActive = false;
+    private long           lastSoundEffectAt = 0;
     private float          hapticRadarProximity = 0f;
     private float          hapticRadarWidthRatio = 0f;
+    private float          hapticRadarDistance = -1f;
     private boolean        hapticRadarCentered = false;
     private boolean        handGuidanceOwnsVibration = false;
     private boolean        handGuidanceIntroductionSpoken = false;
@@ -293,6 +410,9 @@ public class FinderActivity extends BaseActivity {
     private boolean        reachInstructionSent = false;
     private String         lastSpokenApproachBand = null;
     private String         lastHandGuidanceText = null;
+    private float          lastHandGuidanceGap = -1f;
+    private Boolean        lastHandGuidanceHorizontal = null;
+    private boolean        reachZoneCueGiven = false;
 
     private long lastInferenceTime    = 0;
     private long lastModelInputDiagnosticSaveAt = 0;
@@ -300,12 +420,13 @@ public class FinderActivity extends BaseActivity {
     private volatile long lastDetectionSeenTime = 0;
     private long lastMoveCloserTts = 0;
     private long lastHandGuidanceTts = 0;
-    private long lastHandOcclusionTts = 0;
     private long handContactStartedAt = 0;
-    private long lastConfirmedHandOcclusionAt = 0;
-    private long lastSceneMotionAt = 0;
-    private float lastFrameLuma = 255f;
-    private float[] lastLumaSamples = null;
+    // Last time a hand was seen at (in the reach zone of) the target. Camera and main thread.
+    private volatile long lastHandAtTargetAt = 0;
+    // Written by the camera thread, read and reset on the main thread.
+    private volatile long lastSceneMotionAt = 0;
+    private volatile float lastFrameLuma = 255f;
+    private volatile float[] lastLumaSamples = null;
     private final Set<String> usedSearchGuidanceKeys = new HashSet<>();
     private volatile long lastHandSeenTime = 0;
     private volatile long lastHandDetectionTime = 0;
@@ -314,15 +435,35 @@ public class FinderActivity extends BaseActivity {
     private long radarRetrievalStartedAt = 0;
     private long lastReachInstructionAt = 0;
     private long lastLiveHandContactAt = 0;
+    private long handGuidanceLostAt = 0;
+    private long lastPlausibleContactAt = 0;
+    private long lastReadyToGrabCueAt = 0;
+    // Non-zero while the user is in the final reach. Read on the camera thread.
+    private volatile long retrievalEngagedAt = 0;
+    private volatile long lastDetectionMissAt = 0;
     private long lastResultPanelUpdateTime = 0;
     private long lastOcrScanTime = 0;
     private long lastColorSampleTime = 0;
-    private long searchStartedAt = 0;
-    private long detectionSessionToken = 0;
-    private int  consecutiveMissedDetections = 0;
+    private volatile long searchStartedAt = 0;
+    // Acquisition evidence; camera thread only, reset whenever the detection session changes.
+    private long acquisitionSession = -1;
+    private RectF acquisitionBox = null;
+    private long acquisitionLastAt = 0;
+    private int acquisitionHits = 0;
+    // Raw/enhanced alternation state; camera thread only.
+    private int[] enhancePixels = new int[0];
+    private boolean lastFrameEnhanced = false;
+    private boolean lastFrameTriedEnhanced = false;
+    private boolean lastFrameHit = false;
+    private boolean lastHitEnhanced = false;
+    // When a locked target was last lost; a quick re-find resumes without the full announcement.
+    private long trackingLostAt = 0;
+    // Incremented on the main thread; the camera thread compares frame snapshots against it.
+    private volatile long detectionSessionToken = 0;
     private boolean hasSpokenSearchTimeout = false;
     private volatile boolean hasDetectedTargetInCurrentSearch = false;
     private int holdingConfirmationAttempts = 0;
+    private boolean holdingAttemptsExhaustedNoticeGiven = false;
     private volatile Rect lastKnownTrackingBox = null;
     // Frozen only for hand guidance. The live detector box above it continues to move.
     private volatile Rect handGuidanceAnchorBox = null;
@@ -335,10 +476,27 @@ public class FinderActivity extends BaseActivity {
     // full-screen PreviewView because its center-crop scale can inflate a box area.
     private volatile float lastKnownTrackingProximity = 0f;
     private volatile float lastKnownTrackingWidthRatio = 0f;
+    // Estimated camera-to-object distance in meters, or -1 when it cannot be estimated.
+    private volatile float lastKnownTrackingDistance = -1f;
+    private volatile float focalToLongSide = DEFAULT_FOCAL_TO_LONG_SIDE;
     private volatile Rect lastKnownHandBox = null;
+    // Estimated box-center velocity in preview pixels per ms; camera thread only.
+    private float boxVelocityX = 0f;
+    private float boxVelocityY = 0f;
+    private long lastTargetMeteringAt = 0;
     private volatile boolean handInferenceInFlight = false;
+    // Camera thread only. Reset when the camera thread first sees a new detection session,
+    // never from the main thread (clearing it mid-iteration threw ConcurrentModificationException).
     private final ArrayList<String> recentColorHistory = new ArrayList<>();
     private String stableColorName = COLOR_UNCLEAR;
+    private long colorHistorySession = -1;
+    // Reused by the camera thread only, so color sampling allocates nothing per frame.
+    private int[] colorRowBuffer = new int[0];
+    private final int[] colorSampleBuffer = new int[ColorClassifier.GRID * ColorClassifier.GRID];
+
+    // The part of the upright analysis frame that the PreviewView actually shows (from the
+    // shared viewport's crop rect). Replaced, never mutated, so other threads can read it.
+    private volatile RectF analysisVisibleRect = null;
 
     private float letterboxScale   = 1f;
     private int   letterboxPadLeft = 0;
@@ -360,10 +518,6 @@ public class FinderActivity extends BaseActivity {
         binding = ActivityFinderBinding.inflate(getLayoutInflater());
         setContentView(binding.getRoot());
         appliedTextScale = AppPreferences.getTextScale(this);
-        openCvReady = OpenCVLoader.initDebug();
-        if (!openCvReady) {
-            Log.w(TAG, "OpenCV failed to initialize; color descriptions will remain conservative.");
-        }
 
         cameraExecutor = Executors.newSingleThreadExecutor();
         handExecutor = Executors.newSingleThreadExecutor();
@@ -374,33 +528,55 @@ public class FinderActivity extends BaseActivity {
 
         cameraExecutor.execute(() -> {
             try {
-                detector = new TFLiteDetector(this, "model_24class_yolo26n.tflite");
+                TFLiteDetector preloaded = DetectorPreloader.take();
+                detector = preloaded != null
+                        ? preloaded
+                        : new TFLiteDetector(this, "model_24class_yolo26n.tflite");
                 detector.setConfidenceThreshold(AppPreferences.getConfidenceThreshold(this));
                 initializeHandLandmarker();
-            } catch (IOException e) {
+            } catch (IOException | RuntimeException e) {
+                // TFLite reports a corrupt or incompatible model as IllegalArgumentException;
+                // without this the load thread dies and searches wait for the model forever.
                 detectorLoadFailed = true;
                 Log.e(TAG, "Detection model failed to load", e);
             }
+            // runOnUiThread, not mainHandler: onPause clears mainHandler and would drop this.
+            runOnUiThread(this::startSearchQueuedForModel);
         });
 
         voiceFeedback = new VoiceFeedbackManager(this);
-        voiceFeedback.setAccessibilityAnnouncementView(binding.tvStatusText);
+        voiceFeedback.setAccessibilityAnnouncer(binding.tvA11yAnnouncer, binding.tvStatusText);
+        // The screen draws behind the phone's status bar (edge-to-edge on Android 15), so the
+        // Finder status bar starts just below the real bar height instead of a fixed guess.
+        int statusBarGap = getResources().getDimensionPixelSize(R.dimen.finder_status_bar_gap);
+        ViewCompat.setOnApplyWindowInsetsListener(binding.statusBar, (bar, insets) -> {
+            int top = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.statusBars()
+                    | androidx.core.view.WindowInsetsCompat.Type.displayCutout()).top;
+            bar.setPadding(bar.getPaddingLeft(), top + statusBarGap,
+                    bar.getPaddingRight(), bar.getPaddingBottom());
+            return insets;
+        });
+        getOnBackPressedDispatcher().addCallback(this, stopGuidanceBackCallback);
         voiceFeedback.setOnUtteranceDoneListener(utteranceId -> {
             if ("startup_prompt".equals(utteranceId)) {
                 mainHandler.postDelayed(() -> {
                     if (!tutorialShowing && currentState == DetectionState.IDLE
                             && (voiceModal == null || !voiceModal.isShowing())) {
                         openVoiceModalWithoutCancellingSearch(
-                                awaitingRepeatConfirmation ? VoiceMode.CONFIRMATION : VoiceMode.OBJECT);
+                                awaitingRepeatConfirmation ? VoiceMode.CONFIRMATION : VoiceMode.OBJECT,
+                                true);
                     }
                 }, 250);
             } else if ("holding_confirmation_prompt".equals(utteranceId)
                     || "find_another_confirmation_prompt".equals(utteranceId)) {
                 mainHandler.postDelayed(() ->
-                        openVoiceModalWithoutCancellingSearch(VoiceMode.CONFIRMATION), 250);
+                        openVoiceModalWithoutCancellingSearch(VoiceMode.CONFIRMATION, true), 250);
             } else if ("find_another_object_prompt".equals(utteranceId)) {
                 mainHandler.postDelayed(() ->
-                        openVoiceModalWithoutCancellingSearch(VoiceMode.OBJECT), 250);
+                        openVoiceModalWithoutCancellingSearch(VoiceMode.OBJECT, true), 250);
+            } else if ("voice_reprompt".equals(utteranceId)) {
+                final long turn = voiceTurnToken;
+                mainHandler.postDelayed(() -> resumeListeningAfterReprompt(turn), 250);
             }
         });
         voiceFeedback.initialize(() -> {
@@ -410,6 +586,13 @@ public class FinderActivity extends BaseActivity {
                     && AppPreferences.isTutorialDone(this)) {
                 startVoiceGuideWithTalkBackNotice();
             }
+        }, () -> {
+            // Prompts still appear in the status line (and through TalkBack), so say why
+            // the app is silent instead of leaving the user waiting for speech.
+            String notice = "Voice output is unavailable. Check the text-to-speech settings "
+                    + "on this phone. Directions will be shown on screen.";
+            showStatusMessage(notice);
+            binding.getRoot().announceForAccessibility(notice);
         });
 
         startCamera();
@@ -465,51 +648,229 @@ public class FinderActivity extends BaseActivity {
             }
         }
         if (!needed.isEmpty()) {
-            ActivityCompat.requestPermissions(this, needed.toArray(new String[0]), 101);
+            requestAppPermissions(needed.toArray(new String[0]));
         }
+    }
+
+    private boolean hasPermission(String permission) {
+        return ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private void requestAppPermissions(String... permissions) {
+        if (permissionRequestPending) return;
+        permissionRequestPending = true;
+        ActivityCompat.requestPermissions(this, permissions, PERMISSION_REQUEST_CODE);
     }
 
     @Override
     public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == 101) {
-            boolean ok = true;
-            for (int res : grantResults) {
-                if (res != PackageManager.PERMISSION_GRANTED) { ok = false; break; }
+        if (requestCode != PERMISSION_REQUEST_CODE) return;
+        permissionRequestPending = false;
+
+        boolean cameraDenied = false;
+        boolean micDenied = false;
+        for (int i = 0; i < permissions.length && i < grantResults.length; i++) {
+            String permission = permissions[i];
+            if (grantResults[i] == PackageManager.PERMISSION_GRANTED) {
+                blockedPermissions.remove(permission);
+                continue;
             }
-            if (ok) startCamera();
-            else speak("Permissions are required to find objects.");
+            // After a denial, no rationale means the system will not show the dialog again.
+            if (!ActivityCompat.shouldShowRequestPermissionRationale(this, permission)) {
+                blockedPermissions.add(permission);
+            }
+            if (Manifest.permission.CAMERA.equals(permission)) cameraDenied = true;
+            if (Manifest.permission.RECORD_AUDIO.equals(permission)) micDenied = true;
         }
+
+        // The camera works on its own; a denied microphone must not keep it off.
+        if (hasPermission(Manifest.permission.CAMERA)) {
+            startCamera();
+            String pending = pendingSearchAfterCameraGrant;
+            pendingSearchAfterCameraGrant = null;
+            if (pending != null) startSearchForObject(pending);
+        } else {
+            pendingSearchAfterCameraGrant = null;
+        }
+
+        if (cameraDenied || micDenied) announcePermissionDenial(cameraDenied, micDenied);
+    }
+
+    private void announcePermissionDenial(boolean cameraDenied, boolean micDenied) {
+        String message;
+        if (cameraDenied && micDenied) {
+            message = "Camera and microphone access were not allowed. VocaSee needs the camera "
+                    + "to find objects, and the microphone to hear what to find. "
+                    + "Tap the microphone button to allow them.";
+        } else if (cameraDenied) {
+            message = "Camera access was not allowed, so VocaSee cannot find objects. "
+                    + "Tap the microphone button and name an object to allow it.";
+        } else {
+            message = "Microphone access was not allowed, so VocaSee cannot hear you. "
+                    + "Tap the microphone button to allow it, or use the Supported objects "
+                    + "button to choose an object.";
+        }
+        showPermissionMessage(message);
+    }
+
+    private void showPermissionMessage(String message) {
+        showStatusMessage(message);
+        speakOutsideSearch(message);
+    }
+
+    /**
+     * Asks for a missing permission again, or, when the system will no longer show the
+     * dialog, explains the settings path and offers to open the app's settings page.
+     */
+    private void requestOrExplainPermission(String permission, String what) {
+        if (permissionRequestPending) return;
+        if (!blockedPermissions.contains(permission)) {
+            requestAppPermissions(permission);
+            return;
+        }
+        String message = what + " access is turned off for VocaSee. Open settings, choose "
+                + "Permissions, then " + what + ", and allow it.";
+        showPermissionMessage(message);
+        new androidx.appcompat.app.AlertDialog.Builder(this)
+                .setTitle(what + " access needed")
+                .setMessage(message)
+                .setPositiveButton("Open settings", (dialog, which) -> openAppSettings())
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    private void openAppSettings() {
+        Intent intent = new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                android.net.Uri.fromParts("package", getPackageName(), null));
+        try {
+            startActivity(intent);
+        } catch (android.content.ActivityNotFoundException e) {
+            Log.w(TAG, "App settings screen is unavailable", e);
+            showPermissionMessage("Settings could not be opened. Allow access for VocaSee "
+                    + "in the phone's Settings app, under Apps.");
+        }
+    }
+
+    /**
+     * Called when a listening window cannot open. A tap on the microphone asks for access;
+     * automatic prompts only explain why nothing is listening, at most once per interval.
+     */
+    private void onMicrophoneUnavailable(boolean userInitiated) {
+        if (userInitiated) {
+            requestOrExplainPermission(Manifest.permission.RECORD_AUDIO, "Microphone");
+            return;
+        }
+        // The question that wanted this answer cannot be answered; don't wait on it.
+        abandonPendingConfirmation(false);
+        // The system dialog is still asking; its result is announced when it arrives.
+        if (permissionRequestPending) return;
+        long now = SystemClock.elapsedRealtime();
+        if (now - lastMicUnavailableNoticeAt < MIC_NOTICE_INTERVAL_MS) return;
+        lastMicUnavailableNoticeAt = now;
+        showPermissionMessage("Microphone access is off, so VocaSee cannot hear you. "
+                + "Tap the microphone button to allow it, or use the Supported objects "
+                + "button to choose an object.");
     }
 
     // ─── CAMERA ───────────────────────────────────────────────────────────
 
     private void startCamera() {
         // PROCESS 4 - CAMERA INPUT: CameraX supplies rear-camera preview frames and keeps only the latest frame.
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) return;
+        if (!hasPermission(Manifest.permission.CAMERA)) return;
+        cameraStartInFlight = true;
         ListenableFuture<ProcessCameraProvider> future = ProcessCameraProvider.getInstance(this);
 
         future.addListener(() -> {
+            cameraStartInFlight = false;
+            if (isFinishing() || isDestroyed()) return;
             try {
-                ProcessCameraProvider cameraProvider = future.get();
-                Preview preview = new Preview.Builder().build();
-                preview.setSurfaceProvider(binding.cameraPreview.getSurfaceProvider());
-
-                ImageAnalysis imageAnalysis = new ImageAnalysis.Builder()
-                        .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                        .setTargetResolution(new Size(640, 480))
-                        .build();
-
-                imageAnalysis.setAnalyzer(cameraExecutor, this::analyzeFrame);
-
-                cameraProvider.unbindAll();
-                camera = cameraProvider.bindToLifecycle(
-                        this, CameraSelector.DEFAULT_BACK_CAMERA, preview, imageAnalysis);
-                applyTorchForState();
+                bindCameraUseCases(future.get());
             } catch (Exception e) {
+                Log.e(TAG, "Camera initialization failed", e);
                 speak("Camera initialization failed.");
             }
         }, ContextCompat.getMainExecutor(this));
+    }
+
+    private void bindCameraUseCases(ProcessCameraProvider cameraProvider) {
+        // The viewport needs the laid-out PreviewView size; wait for the first layout pass.
+        ViewPort viewPort = binding.cameraPreview.getViewPort();
+        if (viewPort == null) {
+            binding.cameraPreview.post(() -> {
+                if (!isFinishing() && !isDestroyed()) bindCameraUseCases(cameraProvider);
+            });
+            return;
+        }
+        // Both streams use the same 4:3 sensor output, so neither is a differently cropped
+        // field of view. (setTargetResolution(640x480) is read in display orientation, so in
+        // portrait it asked for a landscape size that does not exist and could pick another
+        // aspect ratio than the preview, misplacing every box.)
+        ResolutionSelector fourByThree = new ResolutionSelector.Builder()
+                .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
+                .build();
+        Preview preview = new Preview.Builder()
+                .setResolutionSelector(fourByThree)
+                .build();
+        preview.setSurfaceProvider(binding.cameraPreview.getSurfaceProvider());
+
+        ImageAnalysis imageAnalysis = new ImageAnalysis.Builder()
+                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                .setResolutionSelector(new ResolutionSelector.Builder()
+                        .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
+                        .setResolutionStrategy(new ResolutionStrategy(new Size(640, 480),
+                                ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER))
+                        .build())
+                .build();
+        imageAnalysis.setAnalyzer(cameraExecutor, this::analyzeFrame);
+
+        // The shared viewport makes CameraX report, in each analysis frame's crop rect, exactly
+        // the region the PreviewView shows. Boxes are mapped through that region.
+        UseCaseGroup useCases = new UseCaseGroup.Builder()
+                .setViewPort(viewPort)
+                .addUseCase(preview)
+                .addUseCase(imageAnalysis)
+                .build();
+        cameraProvider.unbindAll();
+        camera = cameraProvider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, useCases);
+        readLensFocalRatio();
+        applyTorchForState();
+    }
+
+    /** Focal length over the sensor's long side, so distance estimates use this lens. */
+    @androidx.annotation.OptIn(markerClass = androidx.camera.camera2.interop.ExperimentalCamera2Interop.class)
+    private void readLensFocalRatio() {
+        try {
+            androidx.camera.camera2.interop.Camera2CameraInfo info =
+                    androidx.camera.camera2.interop.Camera2CameraInfo.from(camera.getCameraInfo());
+            float[] focalLengths = info.getCameraCharacteristic(
+                    android.hardware.camera2.CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS);
+            android.util.SizeF sensor = info.getCameraCharacteristic(
+                    android.hardware.camera2.CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE);
+            if (focalLengths == null || focalLengths.length == 0 || sensor == null) return;
+            float ratio = focalLengths[0] / Math.max(sensor.getWidth(), sensor.getHeight());
+            // Reject implausible values (some devices report placeholders).
+            if (ratio > 0.4f && ratio < 1.5f) focalToLongSide = ratio;
+        } catch (RuntimeException error) {
+            Log.w(TAG, "Lens characteristics unavailable; using a typical focal length.", error);
+        }
+    }
+
+    /**
+     * Pinhole estimate of the camera-to-object distance from the box's long side and the
+     * class's typical largest dimension. A foreshortened or edge-clipped box reads as
+     * farther, which only delays hand guidance. Returns -1 for an unknown class.
+     */
+    private float estimateDistanceMeters(String label, RectF sourceBox, int frameW, int frameH) {
+        float realSize = ObjectCatalog.typicalSizeMeters(label);
+        float boxLongSide = Math.max(sourceBox.width(), sourceBox.height());
+        if (realSize <= 0f || boxLongSide < 1f) return -1f;
+        float focalPx = focalToLongSide * Math.max(frameW, frameH);
+        return realSize * focalPx / boxLongSide;
+    }
+
+    private static boolean isWithinDistance(float distanceMeters, float maxMeters) {
+        return distanceMeters < 0f || distanceMeters <= maxMeters;
     }
 
     // ─── FRAME ANALYSIS ───────────────────────────────────────────────────
@@ -548,8 +909,13 @@ public class FinderActivity extends BaseActivity {
         final String         targetSnapshot = targetObject;
         final String         labelSnapshot  = targetTFLabel;
         final long           sessionSnapshot = detectionSessionToken;
+        // Recycled in finally, so an exception partway through cannot leak a frame.
+        Bitmap rawBitmap = null;
+        Bitmap uprightBitmap = null;
+        Bitmap modelInput = null;
 
         try {
+            if (destroyed) return;
             if (stateSnapshot == DetectionState.IDLE || stateSnapshot == DetectionState.NOT_IN_CLASSES || targetSnapshot == null || labelSnapshot == null || detector == null) return;
 
             long now = SystemClock.elapsedRealtime();
@@ -571,21 +937,27 @@ public class FinderActivity extends BaseActivity {
 
             int rotationDeg = imageProxy.getImageInfo().getRotationDegrees();
             @androidx.annotation.OptIn(markerClass = androidx.camera.core.ExperimentalGetImage.class)
-            Bitmap rawBitmap = imageProxy.toBitmap();
-            Bitmap uprightBitmap = rotateBitmap(rawBitmap, rotationDeg);
+            Bitmap frameBitmap = imageProxy.toBitmap();
+            rawBitmap = frameBitmap;
+            analysisVisibleRect = computeUprightVisibleRect(imageProxy.getCropRect(),
+                    rawBitmap.getWidth(), rawBitmap.getHeight(), rotationDeg);
+            uprightBitmap = rotateBitmap(rawBitmap, rotationDeg);
             if (uprightBitmap != rawBitmap) rawBitmap.recycle();
 
             int uprightW = uprightBitmap.getWidth();
             int uprightH = uprightBitmap.getHeight();
-            Bitmap modelInput = applyLetterbox(uprightBitmap,
-                    detector.getInputWidth(), detector.getInputHeight());
+            modelInput = applyLetterbox(uprightBitmap,
+                    detector.getInputWidth(), detector.getInputHeight(), targetSnapshot);
             maybeSaveModelInputDiagnostic(modelInput, now);
 
             boolean continuingTargetTrack = lastKnownTrackingBox != null
                     && targetSnapshot.equalsIgnoreCase(lastKnownTrackingLabel);
             float normalConfidence = AppPreferences.getConfidenceThreshold(this);
+            // Before a lock, slightly weaker detections are candidates too: acquisition then
+            // requires them to repeat in the same place (see confirmAcquisition).
             float frameConfidence = continuingTargetTrack
-                    ? Math.min(normalConfidence, 0.20f) : normalConfidence;
+                    ? Math.min(normalConfidence, CONTINUING_TRACK_CONFIDENCE)
+                    : normalConfidence * ACQUIRE_CANDIDATE_FACTOR;
             List<TFLiteDetector.Detection> detections = detector.detect(
                     modelInput, labelSnapshot, frameConfidence);
             if (!isActiveDetectionSession(sessionSnapshot)) {
@@ -597,65 +969,73 @@ public class FinderActivity extends BaseActivity {
             TFLiteDetector.Detection selectedDetection = detections.isEmpty() ? null
                     : selectContinuingDetection(detections, continuingTargetTrack,
                     uprightW, uprightH, normalConfidence);
+            recordEnhancementOutcome(selectedDetection != null);
+            if (selectedDetection != null && !continuingTargetTrack
+                    && !confirmAcquisition(selectedDetection, normalConfidence,
+                    sessionSnapshot, now)) {
+                // A single-frame match is often a misclassification; wait for it to repeat.
+                modelInput.recycle();
+                uprightBitmap.recycle();
+                return;
+            }
             if (selectedDetection == null) {
                 modelInput.recycle();
-                consecutiveMissedDetections++;
+                lastDetectionMissAt = now;
 
                 long timeSinceLastSeen = now - lastDetectionSeenTime;
-                boolean hasArmedTrackingBox = lastKnownTrackingBox != null
-                        && targetSnapshot != null
-                        && targetSnapshot.equalsIgnoreCase(lastKnownTrackingLabel);
-                boolean shouldUseTrackingGrace = isTrackingLocked || hasArmedTrackingBox;
-                boolean handGuidanceActive = handGuidanceIntroductionSpoken;
-                int missFrameLimit = handGuidanceActive
-                        ? HAND_GUIDANCE_LOST_MISS_FRAMES
-                        : shouldUseTrackingGrace
-                        ? LOCKED_DETECTION_LOST_MISS_FRAMES
-                        : DETECTION_LOST_MISS_FRAMES;
-                boolean retainingForConfirmation = shouldRetainDetectionDuringConfirmation(now);
-                boolean withinMissBudget = consecutiveMissedDetections < missFrameLimit;
                 Rect persistentBox = lastKnownTrackingBox == null ? null : new Rect(lastKnownTrackingBox);
                 Rect handReferenceBox = handGuidanceAnchorBox == null
                         ? persistentBox : new Rect(handGuidanceAnchorBox);
                 Rect handBox = persistentBox == null ? null
                         : getHandBoxForGuidanceIfNeeded(uprightBitmap, uprightW, uprightH, handReferenceBox,
-                                lastKnownTrackingProximity, lastKnownTrackingWidthRatio, now);
-                boolean handOccludingTarget = isLikelyHandOcclusion(handReferenceBox, handBox);
-                boolean retainingForRecentHandOcclusion = handBox != null
-                        && now - lastConfirmedHandOcclusionAt <= HAND_OCCLUSION_RETAIN_MS;
-                long retentionMs = handGuidanceActive
-                        ? HAND_GUIDANCE_RETENTION_MS : LOCKED_DETECTION_LOST_TIMEOUT_MS;
-                boolean withinTimeBudget = !shouldUseTrackingGrace
-                        || timeSinceLastSeen < retentionMs
-                        || retainingForConfirmation
-                        || handOccludingTarget
-                        || retainingForRecentHandOcclusion;
+                                lastKnownTrackingProximity, lastKnownTrackingWidthRatio,
+                                lastKnownTrackingDistance, now);
+                // A hand over the object's last position is a reach in progress: the object is
+                // hidden under the hand, it has not left. That is not a tracking loss. (Only
+                // overlap counts here; a hand merely near an empty spot explains nothing.)
+                boolean handAtTarget = isHandOverArea(handReferenceBox, handBox);
+                if (handAtTarget) lastHandAtTargetAt = now;
+                boolean handGuidanceActive = handGuidanceIntroductionSpoken || retrievalEngagedAt > 0;
+                boolean recentHandInteraction = handGuidanceActive && lastHandAtTargetAt > 0
+                        && now - lastHandAtTargetAt <= HAND_INTERACTION_RETAIN_MS;
+                boolean retainingForConfirmation = shouldRetainDetectionDuringConfirmation(now);
+                long lostTimeout = persistentBox != null && isNearFrameEdge(persistentBox)
+                        ? TRACK_LOST_AT_EDGE_MS : TRACK_LOST_IN_VIEW_MS;
+                boolean retain = persistentBox != null
+                        && (retainingForConfirmation
+                        || timeSinceLastSeen < lostTimeout
+                        || ((handAtTarget || recentHandInteraction)
+                        && timeSinceLastSeen < HAND_GUIDANCE_RETENTION_MS));
 
-                if (persistentBox != null
-                        && (retainingForConfirmation || withinMissBudget || handOccludingTarget
-                        || retainingForRecentHandOcclusion)
-                        && withinTimeBudget) {
+                if (retain) {
                     String persistentLabel = lastKnownTrackingLabel == null ? targetSnapshot : lastKnownTrackingLabel;
                     float persistentConfidence = lastKnownTrackingConfidence;
+                    boolean liveGrace = timeSinceLastSeen <= LIVE_BOX_GRACE_MS;
+                    // During a short dropout the box keeps moving with the object's recent
+                    // motion instead of freezing; this is display only.
+                    Rect predictedBox = liveGrace ? predictBox(persistentBox, timeSinceLastSeen) : persistentBox;
                     uprightBitmap.recycle();
                     runOnUiThread(() -> {
                         if (!isActiveDetectionSession(sessionSnapshot)) return;
-                        if (timeSinceLastSeen <= LIVE_BOX_GRACE_MS) {
-                            showBoundingBox(persistentBox, persistentLabel, persistentConfidence);
-                            updateHapticRadar(persistentBox, false,
-                                    lastKnownTrackingProximity, lastKnownTrackingWidthRatio);
+                        if (handAtTarget) {
+                            // Keep the object marked where it was last seen clearly, under the hand.
+                            showBoundingBox(handReferenceBox, persistentLabel, persistentConfidence);
+                        } else if (liveGrace) {
+                            showBoundingBox(predictedBox, persistentLabel, persistentConfidence);
                         } else {
                             hideLiveBoundingBox();
-                            // The retained tracking box is useful for recovery and hand
-                            // guidance, but it is no longer a live target for the radar.
+                        }
+                        if (liveGrace) {
+                            updateHapticRadar(persistentBox, false, lastKnownTrackingProximity,
+                                    lastKnownTrackingWidthRatio, lastKnownTrackingDistance);
+                        } else {
+                            // The retained box serves hand guidance; it is no longer a live
+                            // target for the radar.
                             stopHapticRadar();
                         }
                         if (HAND_TO_OBJECT_GUIDANCE_ENABLED && handBox != null) {
                             // A retained box is only a last verified position, not new proof of contact.
                             updateHandGuidance(handReferenceBox, handBox, false);
-                            if (handOccludingTarget) {
-                                promptHandOcclusion();
-                            }
                         } else {
                             clearHandGuidanceOverlayAndResumeRadar();
                         }
@@ -673,36 +1053,47 @@ public class FinderActivity extends BaseActivity {
             }
 
             TFLiteDetector.Detection best = selectedDetection;
+            long previousSeenAt = lastDetectionSeenTime;
+            Rect previousBox = lastKnownTrackingBox;
             lastDetectionSeenTime = now;
             // Publish the hit before posting UI work so the timeout/reminder thread
             // cannot announce a miss while the detection callback is still queued.
             hasDetectedTargetInCurrentSearch = true;
-            consecutiveMissedDetections = 0;
             Rect screenBox = smoothTrackingBox(mapBoxToScreen(best.boundingBox, uprightW, uprightH));
+            updateBoxVelocity(previousBox, screenBox, previousSeenAt, now);
             String recognizedText = maybeRunOnDeviceOcr(uprightBitmap, best, targetSnapshot,
                     sessionSnapshot, now);
             RectF sourceBox = mapModelBoxToSource(best.boundingBox, uprightW, uprightH);
             float sourceProximity = clamp01((sourceBox.width() * sourceBox.height())
                     / Math.max(1f, uprightW * (float) uprightH));
             float sourceWidthRatio = clamp01(sourceBox.width() / Math.max(1f, uprightW));
+            float sourceDistance = estimateDistanceMeters(targetSnapshot, sourceBox, uprightW, uprightH);
             // Retain the first valid target immediately. The UI callback and hand model
             // run afterward, so waiting to cache it can lose the target to a moving hand.
             cacheTrackingBox(screenBox, targetSnapshot, best.confidence,
-                    sourceProximity, sourceWidthRatio);
+                    sourceProximity, sourceWidthRatio, sourceDistance);
+            if (sessionSnapshot != colorHistorySession) {
+                colorHistorySession = sessionSnapshot;
+                resetColorStability();
+            }
             String colorName = stableColorName;
-            if (now - lastColorSampleTime >= COLOR_SAMPLE_INTERVAL_MS) {
+            if (now - lastColorSampleTime >= COLOR_SAMPLE_INTERVAL_MS
+                    && !isHandOverObject(screenBox, now)) {
                 lastColorSampleTime = now;
                 colorName = updateStableColorName(getDominantColorName(uprightBitmap, sourceBox));
             }
             modelInput.recycle();
+            Rect handBox = getHandBoxForGuidanceIfNeeded(uprightBitmap, uprightW, uprightH, screenBox,
+                    sourceProximity, sourceWidthRatio, sourceDistance, now);
+            if (retrievalEngagedAt > 0 && handBox != null
+                    && getIntersectionArea(expandObjectBox(screenBox), handBox) <= 0f) {
+                // The hand is clear of the target, so this live box is not shrunk by
+                // occlusion. Let the frozen guidance anchor follow a moved phone.
+                handGuidanceAnchorBox = new Rect(screenBox);
+            }
             Rect handReferenceBox = handGuidanceAnchorBox == null
                     ? screenBox : new Rect(handGuidanceAnchorBox);
-            Rect handBox = getHandBoxForGuidanceIfNeeded(uprightBitmap, uprightW, uprightH, handReferenceBox,
-                    sourceProximity, sourceWidthRatio, now);
-            if (isPotentialLiveHandOcclusion(handReferenceBox, handBox,
-                    sourceProximity, sourceWidthRatio)) {
-                lastConfirmedHandOcclusionAt = now;
-            }
+            if (isHandOverArea(handReferenceBox, handBox)) lastHandAtTargetAt = now;
             uprightBitmap.recycle();
 
             final String finalColor = (colorName != null) ? colorName : COLOR_UNCLEAR;
@@ -711,47 +1102,86 @@ public class FinderActivity extends BaseActivity {
 
             runOnUiThread(() -> onObjectDiscovered(sessionSnapshot, targetSnapshot, screenBox, finalColor,
                     best.confidence, handBox, finalRecognizedText,
-                    sourceProximity, sourceWidthRatio));
+                    sourceProximity, sourceWidthRatio, sourceDistance));
 
+        } catch (RuntimeException | OutOfMemoryError error) {
+            // CameraX does not catch analyzer exceptions; an uncaught one kills the app.
+            // Dropping one frame is always safer than crashing mid-guidance.
+            Log.e(TAG, "Frame analysis failed; skipping frame", error);
         } finally {
+            recycleIfNeeded(modelInput);
+            recycleIfNeeded(uprightBitmap);
+            recycleIfNeeded(rawBitmap);
             imageProxy.close();
         }
     }
 
+    private static void recycleIfNeeded(Bitmap bitmap) {
+        if (bitmap != null && !bitmap.isRecycled()) bitmap.recycle();
+    }
+
     private void onObjectDiscovered(long sessionSnapshot, String label, Rect screenBox, String color,
                                     float confidence, Rect handBox, String recognizedText,
-                                    float sourceProximity, float sourceWidthRatio) {
+                                    float sourceProximity, float sourceWidthRatio,
+                                    float sourceDistance) {
         // PROCESS 8 - MULTIMODAL OUTPUT: Update visual overlays, speak results, play a cue, and start haptic guidance.
         if (!isActiveDetectionSession(sessionSnapshot)) return;
         if (targetObject == null || label == null || !label.equalsIgnoreCase(targetObject)) return;
         hasDetectedTargetInCurrentSearch = true;
         isTrackingLocked = true;
-        cacheTrackingBox(screenBox, label, confidence, sourceProximity, sourceWidthRatio);
+        cacheTrackingBox(screenBox, label, confidence, sourceProximity, sourceWidthRatio, sourceDistance);
+        boolean resumingFromGuidance = handGuidanceLostAt > 0
+                && SystemClock.elapsedRealtime() - handGuidanceLostAt <= HAND_INTERACTION_RETAIN_MS;
         if (currentState != DetectionState.FOUND) {
             stopSearchReminder();
+            // A search reminder queued just before the lock would now be wrong.
+            if (voiceFeedback != null) voiceFeedback.cancelGuidanceMessages("search_reminder");
             setDetectionState(DetectionState.FOUND);
             lastSpokenLabel = label;
             lastSpokenColor = color;
-            triggerHapticFeedback();
-            playSoundEffect(ToneGenerator.TONE_PROP_ACK);
-            String framePosition = getFramePositionLabel(screenBox);
-            updateDetectedResultPanel(label, color, confidence, framePosition, recognizedText);
-            updateFoundStatus(label, color, recognizedText);
-            boolean hasColor = AppPreferences.isColorDescriptionEnabled(this)
-                    && isStableColorForFeedback(color);
-            boolean hasText = isReadableOcrText(recognizedText);
-            String foundText = "Found the " + label + "."
-                    + (hasColor ? " It looks " + formatColorDescription(color) + "." : "")
-                    + " Keep it in view; I will guide you closer.";
-            if (hasColor) announcedFoundColor = color;
-            if (hasText) {
-                lastSpokenOcrText = recognizedText;
-                announcedFoundText = recognizedText;
+            if (resumingFromGuidance) {
+                // Recovering from a brief guided loss — restore tracking without replaying
+                // the found pipeline or approach prompts the user has already heard.
+                reachInstructionSent = true;
+                if (foundFeedbackStartedAt <= 0) foundFeedbackStartedAt = SystemClock.elapsedRealtime();
+                engageRetrieval();
+            } else if (trackingLostAt > 0
+                    && SystemClock.elapsedRealtime() - trackingLostAt <= REACQUIRE_QUIET_MS) {
+                // Back after a short loss: the user already heard the full description.
+                // The "lost" message is stale now, so it is cut off by a short cue.
+                trackingLostAt = 0;
+                vibratePattern(60);
+                playSoundEffect(ToneGenerator.TONE_PROP_ACK);
+                updateDetectedResultPanel(label, color, confidence,
+                        getFramePositionLabel(screenBox), recognizedText);
+                updateFoundStatus(label, color, recognizedText);
+                if (foundFeedbackStartedAt <= 0) foundFeedbackStartedAt = SystemClock.elapsedRealtime();
+                speakUrgent("Got the " + label + " again.");
+            } else {
+                trackingLostAt = 0;
+                triggerHapticFeedback();
+                playSoundEffect(ToneGenerator.TONE_PROP_ACK);
+                String framePosition = getFramePositionLabel(screenBox);
+                updateDetectedResultPanel(label, color, confidence, framePosition, recognizedText);
+                updateFoundStatus(label, color, recognizedText);
+                boolean hasColor = AppPreferences.isColorDescriptionEnabled(this)
+                        && isStableColorForFeedback(color);
+                boolean hasText = isReadableOcrText(recognizedText);
+                String foundText = "Found the " + label + "."
+                        + (hasColor ? " It looks " + formatColorDescription(color) + "." : "")
+                        + " Move slowly toward it.";
+                if (hasColor) announcedFoundColor = color;
+                if (hasText) {
+                    lastSpokenOcrText = recognizedText;
+                    announcedFoundText = recognizedText;
+                }
+                foundFeedbackStartedAt = SystemClock.elapsedRealtime();
+                // The target matters more than whatever is playing (even the search-start
+                // prompt), so cut it off now instead of letting it finish first.
+                speakUrgent(foundText);
+                // Keep the user's hands away from the camera until the target is visibly
+                // close. The reach prompt is issued by the stable proximity gate below.
             }
-            foundFeedbackStartedAt = SystemClock.elapsedRealtime();
-            speak(foundText);
-            // Keep the user's hands away from the camera until the target is visibly
-            // close. The reach prompt is issued by the stable proximity gate below.
         } else {
             if (lastSpokenLabel == null || !lastSpokenLabel.equalsIgnoreCase(label)) {
                 lastSpokenLabel = label;
@@ -763,12 +1193,17 @@ public class FinderActivity extends BaseActivity {
             announceFoundDetailsIfNeeded(label, color, recognizedText);
         }
         showBoundingBox(screenBox, label, confidence);
+        maybeMeterOnTarget(screenBox);
+        releaseRetrievalIfWithdrawn(SystemClock.elapsedRealtime());
         // Once the target is locked, a visible hand can be guided even before the
         // object is close enough for a retrieval confirmation.
         boolean handGuidanceCandidate = HAND_TO_OBJECT_GUIDANCE_ENABLED && handBox != null;
         // A visible hand owns the guidance loop. This prevents a radar confirmation from
         // firing first simply because the object momentarily fills a large part of the view.
-        updateHapticRadar(screenBox, !handGuidanceCandidate, sourceProximity, sourceWidthRatio);
+        // During the final reach a missing hand box means occlusion, not a fresh approach,
+        // so the radar keeps pulsing but must not restart its spoken approach prompts.
+        updateHapticRadar(screenBox, !handGuidanceCandidate && retrievalEngagedAt <= 0,
+                sourceProximity, sourceWidthRatio, sourceDistance);
         if (handGuidanceCandidate) {
             Rect handReferenceBox = handGuidanceAnchorBox == null
                     ? screenBox : new Rect(handGuidanceAnchorBox);
@@ -779,6 +1214,27 @@ public class FinderActivity extends BaseActivity {
             maybeGiveNoHandFallbackGuidance(handBox, SystemClock.elapsedRealtime());
             announceProximityBand(screenBox);
         }
+    }
+
+    /**
+     * Sets auto-exposure from the tracked object instead of the whole scene, so a bright
+     * window or a glare spot behind it does not leave it too dark (or the reverse). Exposure
+     * only: re-triggering autofocus would make the lens hunt and blur frames.
+     */
+    private void maybeMeterOnTarget(Rect box) {
+        long now = SystemClock.elapsedRealtime();
+        if (camera == null || now - lastTargetMeteringAt < TARGET_METERING_INTERVAL_MS) return;
+        lastTargetMeteringAt = now;
+        float size = Math.max(0.1f, Math.min(0.4f,
+                Math.max(box.width() / (float) getPreviewWidth(), box.height() / (float) getPreviewHeight())));
+        androidx.camera.core.MeteringPoint point = binding.cameraPreview.getMeteringPointFactory()
+                .createPoint(box.exactCenterX(), box.exactCenterY(), size);
+        androidx.camera.core.FocusMeteringAction action =
+                new androidx.camera.core.FocusMeteringAction.Builder(point,
+                        androidx.camera.core.FocusMeteringAction.FLAG_AE)
+                        .setAutoCancelDuration(5, java.util.concurrent.TimeUnit.SECONDS)
+                        .build();
+        camera.getCameraControl().startFocusAndMetering(action);
     }
 
     private String maybeRunOnDeviceOcr(Bitmap sourceFrame, TFLiteDetector.Detection detection,
@@ -803,6 +1259,9 @@ public class FinderActivity extends BaseActivity {
         lastOcrScanTime = now;
         ocrInFlight = true;
         Bitmap objectCrop = Bitmap.createBitmap(sourceFrame, left, top, right - left, bottom - top);
+        // A full-frame crop of an immutable bitmap returns the frame itself. OCR recycles its
+        // input asynchronously, so it must never receive the frame this thread still uses.
+        if (objectCrop == sourceFrame) objectCrop = sourceFrame.copy(Bitmap.Config.ARGB_8888, false);
         if (onDeviceTextRecognizer == null) {
             onDeviceTextRecognizer = new OnDeviceTextRecognizer();
         }
@@ -829,6 +1288,38 @@ public class FinderActivity extends BaseActivity {
         return text != null && !text.trim().isEmpty();
     }
 
+    /**
+     * Camera thread. Constant-velocity estimate of the box center (pixels per ms), smoothed
+     * over detector frames: a lightweight alpha-beta tracker, the simplest form of a Kalman
+     * filter. A long gap means the motion is unknown, so the estimate restarts.
+     */
+    private void updateBoxVelocity(Rect previous, Rect current, long previousAt, long now) {
+        long dt = now - previousAt;
+        if (previous == null || previousAt <= 0 || dt <= 0 || dt > VELOCITY_MAX_GAP_MS) {
+            boxVelocityX = 0f;
+            boxVelocityY = 0f;
+            return;
+        }
+        float rawX = (current.exactCenterX() - previous.exactCenterX()) / dt;
+        float rawY = (current.exactCenterY() - previous.exactCenterY()) / dt;
+        boxVelocityX = VELOCITY_SMOOTHING * boxVelocityX + (1f - VELOCITY_SMOOTHING) * rawX;
+        boxVelocityY = VELOCITY_SMOOTHING * boxVelocityY + (1f - VELOCITY_SMOOTHING) * rawY;
+    }
+
+    /** The last box moved along its estimated velocity, damped and kept on screen. */
+    private Rect predictBox(Rect box, long elapsedMs) {
+        float horizon = Math.min(elapsedMs, PREDICTION_MAX_MS) * PREDICTION_DAMPING;
+        int dx = Math.round(boxVelocityX * horizon);
+        int dy = Math.round(boxVelocityY * horizon);
+        int width = getPreviewWidth();
+        int height = getPreviewHeight();
+        dx = Math.max(-box.left, Math.min(width - box.right, dx));
+        dy = Math.max(-box.top, Math.min(height - box.bottom, dy));
+        Rect predicted = new Rect(box);
+        predicted.offset(dx, dy);
+        return predicted;
+    }
+
     private Rect smoothTrackingBox(Rect detectedBox) {
         // PROCESS 6A - SMOOTHING: Blend small box changes while allowing large movements to update immediately.
         if (lastKnownTrackingBox == null) {
@@ -845,6 +1336,45 @@ public class FinderActivity extends BaseActivity {
                 Math.max(right, left + 1),
                 Math.max(bottom, top + 1)
         );
+    }
+
+    /**
+     * Camera thread only. A target is locked (and "Found" announced) only after it was
+     * detected in ACQUIRE_HITS frames close together in the same place, or once with a
+     * clearly high score. This filters one-frame misclassifications without delaying an
+     * obvious detection.
+     */
+    private boolean confirmAcquisition(TFLiteDetector.Detection detection, float normalConfidence,
+                                       long session, long now) {
+        if (session != acquisitionSession) {
+            acquisitionSession = session;
+            acquisitionBox = null;
+            acquisitionHits = 0;
+        }
+        float strongConfidence = Math.min(0.9f, normalConfidence + ACQUIRE_STRONG_MARGIN);
+        boolean consistent = acquisitionBox != null
+                && now - acquisitionLastAt <= ACQUIRE_WINDOW_MS
+                && isSamePlace(acquisitionBox, detection.boundingBox);
+        acquisitionHits = consistent ? acquisitionHits + 1 : 1;
+        acquisitionBox = new RectF(detection.boundingBox);
+        acquisitionLastAt = now;
+        boolean confirmed = detection.confidence >= strongConfidence
+                || (acquisitionHits >= ACQUIRE_HITS && detection.confidence >= normalConfidence * ACQUIRE_CANDIDATE_FACTOR);
+        if (confirmed) {
+            acquisitionBox = null;
+            acquisitionHits = 0;
+        }
+        return confirmed;
+    }
+
+    /** Model-input boxes whose centers lie within ACQUIRE_MAX_SHIFT of the input diagonal. */
+    private boolean isSamePlace(RectF previous, RectF current) {
+        float dx = previous.centerX() - current.centerX();
+        float dy = previous.centerY() - current.centerY();
+        float w = detector.getInputWidth();
+        float h = detector.getInputHeight();
+        float diagonal = (float) Math.sqrt(w * w + h * h);
+        return Math.sqrt(dx * dx + dy * dy) / Math.max(1f, diagonal) <= ACQUIRE_MAX_SHIFT;
     }
 
     private TFLiteDetector.Detection selectContinuingDetection(
@@ -867,7 +1397,9 @@ public class FinderActivity extends BaseActivity {
             float dx = previous.exactCenterX() - candidateBox.exactCenterX();
             float dy = previous.exactCenterY() - candidateBox.exactCenterY();
             float distance = (float) Math.sqrt(dx * dx + dy * dy) / Math.max(1f, diagonal);
-            if (overlap < 0.03f && distance > 0.16f) continue;
+            // The detector runs at about 2.5 frames per second on test phones, so a slightly
+            // moved object can shift far between frames. 0.16 rejected such updates.
+            if (overlap < 0.03f && distance > CONTINUING_MAX_SHIFT) continue;
 
             float matchScore = overlap * 2f + candidate.confidence * 0.25f - distance;
             if (matchScore > bestMatchScore) {
@@ -903,25 +1435,34 @@ public class FinderActivity extends BaseActivity {
     }
 
     private void cacheTrackingBox(Rect box, String label, float confidence,
-                                  float sourceProximity, float sourceWidthRatio) {
+                                  float sourceProximity, float sourceWidthRatio,
+                                  float sourceDistance) {
         lastKnownTrackingBox = new Rect(box);
-        if (handGuidanceAnchorBox == null) {
+        // Follow the live box during the approach; freeze it only once the reach begins so
+        // an occluding hand cannot drag it. Freezing at first sight would anchor guidance
+        // to where the object was when the user was still far away.
+        if (handGuidanceAnchorBox == null || retrievalEngagedAt <= 0) {
             handGuidanceAnchorBox = new Rect(box);
         }
         lastKnownTrackingLabel = label;
         lastKnownTrackingConfidence = confidence;
         lastKnownTrackingProximity = sourceProximity;
         lastKnownTrackingWidthRatio = sourceWidthRatio;
+        lastKnownTrackingDistance = sourceDistance;
     }
 
-    private Rect detectHandBox(Bitmap frame, int frameWidth, int frameHeight, long timestampMs) {
+    private Rect detectHandBox(Bitmap frame, int frameWidth, int frameHeight, RectF visible,
+                               long timestampMs) {
         // PROCESS 7A - HAND LOCALIZATION: Convert MediaPipe landmarks into a screen-space hand bounding box.
-        if (handLandmarker == null) return null;
+        // Runs on handExecutor, which is also where the landmarker is closed, so a
+        // non-null instance read here cannot be closed while this call uses it.
+        HandLandmarker landmarker = handLandmarker;
+        if (landmarker == null) return null;
         try {
             MPImage image = new BitmapImageBuilder(frame).build();
-            HandLandmarkerResult result = handLandmarker.detectForVideo(image, timestampMs);
+            HandLandmarkerResult result = landmarker.detectForVideo(image, timestampMs);
             if (result == null || result.landmarks().isEmpty()) return null;
-            return mapHandLandmarksToScreen(result.landmarks().get(0), frameWidth, frameHeight);
+            return mapHandLandmarksToScreen(result.landmarks().get(0), frameWidth, frameHeight, visible);
         } catch (Exception e) {
             Log.w(TAG, "Hand detection failed", e);
             return null;
@@ -930,12 +1471,16 @@ public class FinderActivity extends BaseActivity {
 
     private Rect getHandBoxForGuidanceIfNeeded(Bitmap frame, int frameWidth, int frameHeight,
                                                 Rect objectBox, float sourceProximity,
-                                                float sourceWidthRatio, long now) {
+                                                float sourceWidthRatio, float sourceDistance,
+                                                long now) {
         if (!HAND_TO_OBJECT_GUIDANCE_ENABLED) {
             lastKnownHandBox = null;
             return null;
         }
-        if (!isCloseEnoughForHandGuidance(sourceProximity, sourceWidthRatio)) {
+        // A partly occluded object yields a smaller (or, held up close, a larger) box. Once the
+        // reach is under way, keep tracking the hand regardless so guidance is not dropped.
+        if (retrievalEngagedAt <= 0
+                && !isCloseEnoughForHandGuidance(sourceProximity, sourceWidthRatio, sourceDistance)) {
             lastKnownHandBox = null;
             return null;
         }
@@ -946,9 +1491,11 @@ public class FinderActivity extends BaseActivity {
             lastHandDetectionTime = now;
             handInferenceInFlight = true;
             Bitmap handFrame = frame.copy(Bitmap.Config.ARGB_8888, false);
+            // Capture this frame's visible region; the next frame may replace the field.
+            RectF visible = analysisVisibleRect;
             handExecutor.execute(() -> {
                 try {
-                    Rect handBox = detectHandBox(handFrame, frameWidth, frameHeight, now);
+                    Rect handBox = detectHandBox(handFrame, frameWidth, frameHeight, visible, now);
                     if (handBox != null && !handBox.isEmpty()) {
                         lastKnownHandBox = new Rect(handBox);
                         lastHandSeenTime = SystemClock.elapsedRealtime();
@@ -969,7 +1516,8 @@ public class FinderActivity extends BaseActivity {
         return null;
     }
 
-    private Rect mapHandLandmarksToScreen(List<NormalizedLandmark> landmarks, int frameWidth, int frameHeight) {
+    private Rect mapHandLandmarksToScreen(List<NormalizedLandmark> landmarks, int frameWidth,
+                                          int frameHeight, RectF visible) {
         float minX = 1f, minY = 1f, maxX = 0f, maxY = 0f;
         for (NormalizedLandmark landmark : landmarks) {
             minX = Math.min(minX, landmark.x());
@@ -978,22 +1526,19 @@ public class FinderActivity extends BaseActivity {
             maxY = Math.max(maxY, landmark.y());
         }
 
-        int screenW = binding.cameraPreview.getWidth();
-        int screenH = binding.cameraPreview.getHeight();
-        if (screenW == 0) screenW = getResources().getDisplayMetrics().widthPixels;
-        if (screenH == 0) screenH = getResources().getDisplayMetrics().heightPixels;
-
-        float scale = Math.max((float) screenW / frameWidth, (float) screenH / frameHeight);
-        float previewW = frameWidth * scale;
-        float previewH = frameHeight * scale;
-        float offsetX = (screenW - previewW) / 2f;
-        float offsetY = (screenH - previewH) / 2f;
+        int screenW = getPreviewWidth();
+        int screenH = getPreviewHeight();
+        // Landmarks are normalized to the whole upright frame; map them through the same
+        // visible region as the object boxes so hand and object share one coordinate space.
+        RectF mapped = mapSourceRectToScreen(
+                new RectF(minX * frameWidth, minY * frameHeight, maxX * frameWidth, maxY * frameHeight),
+                visibleRectOrFullFrame(visible, frameWidth, frameHeight), screenW, screenH);
         int pad = dp(18);
 
-        int left = Math.round(minX * previewW + offsetX) - pad;
-        int top = Math.round(minY * previewH + offsetY) - pad;
-        int right = Math.round(maxX * previewW + offsetX) + pad;
-        int bottom = Math.round(maxY * previewH + offsetY) + pad;
+        int left = Math.round(mapped.left) - pad;
+        int top = Math.round(mapped.top) - pad;
+        int right = Math.round(mapped.right) + pad;
+        int bottom = Math.round(mapped.bottom) + pad;
         return new Rect(
                 Math.max(0, left),
                 Math.max(0, top),
@@ -1012,14 +1557,35 @@ public class FinderActivity extends BaseActivity {
             clearHandGuidanceOverlayAndResumeRadar();
             return;
         }
+        engageRetrieval();
 
-        boolean handTooCloseToCamera = isHandTooCloseToCamera(objectBox, handBox);
-        boolean isFirstHandGuidance = !handGuidanceIntroductionSpoken;
+        // A reaching hand is naturally much larger than a small object and covers it; that is
+        // the retrieval, not an obstruction. Warn only when the hand fills the camera view.
+        boolean handTooCloseToCamera = isHandBlockingCamera(handBox) && handContactStartedAt == 0;
         String directionalGuidance = handTooCloseToCamera
-                ? "Your hand is very close to the camera. Move it back slightly so I can keep tracking the object."
+                ? "Your hand is blocking the camera. Move it away from the phone."
                 : buildHandGuidance(objectBox, handBox);
+        long nowForGuidance = SystemClock.elapsedRealtime();
+        // Skip the intro and resume guidance silently when:
+        //   (a) re-entering within the occlusion retention window after a brief tracking loss, or
+        //   (b) the hand is already near the target when first detected (fast reach).
+        boolean resumingAfterOcclusion = !handGuidanceIntroductionSpoken && handGuidanceLostAt > 0
+                && nowForGuidance - handGuidanceLostAt <= HAND_INTERACTION_RETAIN_MS;
+        boolean handAlreadyNear = !handGuidanceIntroductionSpoken
+                && (isHandInReachZone(objectBox, handBox)
+                || getHandGapRatio(objectBox, handBox) < HAND_NEAR_GAP);
+        boolean isFirstHandGuidance = !handGuidanceIntroductionSpoken
+                && !resumingAfterOcclusion && !handAlreadyNear;
+        if (!handGuidanceIntroductionSpoken && !isFirstHandGuidance) {
+            // Re-arm guidance context without replaying the intro.
+            handGuidanceIntroductionSpoken = true;
+            handGuidanceLostAt = 0;
+            lastHandGuidanceTts = nowForGuidance - HAND_GUIDANCE_TTS_INTERVAL_MS;
+            lastHandGuidanceText = "";
+            lastHandGuidanceGap = -1f;
+        }
         String guidance = isFirstHandGuidance
-                ? "Hand detected. I will now guide your hand to the object. Keep the phone still."
+                ? "Hand detected. Keep the phone still and follow my directions."
                 : directionalGuidance;
         binding.handGuidanceOverlay.showGuidance(objectBox, handBox, guidance);
         handGuidanceOwnsVibration = true;
@@ -1035,8 +1601,9 @@ public class FinderActivity extends BaseActivity {
 
         if (isFirstHandGuidance) {
             handGuidanceIntroductionSpoken = true;
-            lastHandGuidanceTts = SystemClock.elapsedRealtime();
+            lastHandGuidanceTts = nowForGuidance;
             lastHandGuidanceText = guidance;
+            lastHandGuidanceGap = getHandGapRatio(objectBox, handBox);
             vibratePattern(45, 45);
             // This must follow the detection announcement instead of being discarded as
             // low-priority ambient speech while Text-to-Speech is still busy.
@@ -1044,20 +1611,77 @@ public class FinderActivity extends BaseActivity {
             return;
         }
 
+        // Without the voice guide there is no "is this the one?" question to end the search,
+        // so a longer steady touch ends it instead.
+        if (!AppPreferences.isVoiceGuideEnabled(this) && stableHandContact
+                && currentState == DetectionState.FOUND
+                && SystemClock.elapsedRealtime() - handContactStartedAt >= SILENT_FINISH_CONTACT_MS) {
+            finishSearchWithoutVoice();
+            return;
+        }
+
         boolean recentLiveContact = lastLiveHandContactAt > 0
                 && SystemClock.elapsedRealtime() - lastLiveHandContactAt <= HAND_CONTACT_RETAIN_MS;
-        if (HAND_RETRIEVAL_CONFIRMATION_ENABLED
+        if (isHoldingConfirmationEnabled()
                 && (stableHandContact || recentLiveContact)) {
             if (shouldAskHoldingConfirmationAgain()) {
                 vibratePattern(45, 45, 45);
                 promptHoldingConfirmation();
+                return;
+            }
+            if (!holdingAttemptsExhausted()) return;
+            // Every holding question went unanswered. Say once how to finish, then fall
+            // through to the reach-zone cues so the hand is not left in silence.
+            if (!holdingAttemptsExhaustedNoticeGiven
+                    && !awaitingHoldingConfirmation && !awaitingFindAnotherConfirmation) {
+                holdingAttemptsExhaustedNoticeGiven = true;
+                speakQueued("If you are holding the " + targetNameForSpeech() + ", you're done. "
+                        + "Tap the microphone button to find something else.",
+                        "holding_attempts_exhausted");
+            }
+        }
+
+        float gap = getHandGapRatio(objectBox, handBox);
+        if (gap > HAND_REACH_ZONE_REARM_GAP) {
+            reachZoneCueGiven = false;
+            // The hand moved well away from the object; a new contact may be asked about again.
+            if (holdingAttemptsExhausted()) {
+                holdingConfirmationAttempts = 0;
+                holdingAttemptsExhaustedNoticeGiven = false;
+            }
+        }
+
+        // The hand is in the reach zone around the object, or has already reached it.
+        // Directions stop here, while the object is still visible: steering the hand any
+        // further only makes it cover the object and blind the camera.
+        boolean contactInProgress = isHoldingConfirmationEnabled()
+                && (handContactStartedAt > 0 || isHandCoveringObject(objectBox, handBox));
+        if (contactInProgress || (!handTooCloseToCamera && isHandInReachZone(objectBox, handBox))) {
+            if (voiceFeedback != null) {
+                voiceFeedback.cancelGuidanceMessages(ALL_GUIDANCE_PROMPT_CATEGORIES);
+            }
+            // Reaching the object is progress, not an error: show it and give one distinct
+            // haptic cue now, rather than waiting silently for the holding question.
+            binding.handGuidanceOverlay.showGuidance(objectBox, handBox, "Ready to grab.");
+            long nowForCue = SystemClock.elapsedRealtime();
+            if (nowForCue - lastReadyToGrabCueAt >= READY_TO_GRAB_CUE_INTERVAL_MS) {
+                lastReadyToGrabCueAt = nowForCue;
+                vibratePattern(0, 30, 50, 30);
+            }
+            // One short spoken cue on entering the zone, so the final reach does not wait for
+            // the hand to cover the object. Contact instead goes straight to the question.
+            if (!contactInProgress && !reachZoneCueGiven
+                    && !awaitingHoldingConfirmation && !awaitingFindAnotherConfirmation) {
+                reachZoneCueGiven = true;
+                if (voiceFeedback != null) {
+                    voiceFeedback.speakNormal("Reach straight ahead and grab it.", "hand_reach_zone");
+                }
             }
             return;
         }
 
         long now = SystemClock.elapsedRealtime();
-        float distance = getHandDistanceRatio(objectBox, handBox);
-        vibratePattern(distance > HAND_FAR_DISTANCE ? 45 : 30);
+        vibratePattern(gap > HAND_FAR_GAP ? 45 : 30);
 
         boolean guidanceChanged = !guidance.equals(lastHandGuidanceText);
         long repeatDelay = guidanceChanged
@@ -1065,7 +1689,14 @@ public class FinderActivity extends BaseActivity {
         if (now - lastHandGuidanceTts >= repeatDelay
                 && !awaitingHoldingConfirmation
                 && !awaitingFindAnotherConfirmation) {
+            // The same direction is repeated only if the hand has stalled or drifted. While
+            // the user is closing the gap they already know the direction; stay quiet and
+            // measure progress again from here.
+            boolean progressing = !guidanceChanged && lastHandGuidanceGap >= 0f
+                    && gap <= lastHandGuidanceGap - HAND_PROGRESS_GAP;
             lastHandGuidanceTts = now;
+            lastHandGuidanceGap = gap;
+            if (progressing) return;
             lastHandGuidanceText = guidance;
             if (voiceFeedback != null) {
                 voiceFeedback.speakNormal(guidance, "hand_guidance");
@@ -1081,9 +1712,11 @@ public class FinderActivity extends BaseActivity {
     private void resumeRadarVibrationIfNeeded() {
         if (!handGuidanceOwnsVibration) return;
         handGuidanceOwnsVibration = false;
-        if (currentState == DetectionState.FOUND && lastKnownTrackingBox != null) {
-            updateHapticRadar(lastKnownTrackingBox, false,
-                    lastKnownTrackingProximity, lastKnownTrackingWidthRatio);
+        // Only a live detection drives the radar; a box retained under the hand does not.
+        if (currentState == DetectionState.FOUND && lastKnownTrackingBox != null
+                && SystemClock.elapsedRealtime() - lastDetectionSeenTime <= LIVE_BOX_GRACE_MS) {
+            updateHapticRadar(lastKnownTrackingBox, false, lastKnownTrackingProximity,
+                    lastKnownTrackingWidthRatio, lastKnownTrackingDistance);
         }
     }
 
@@ -1093,44 +1726,22 @@ public class FinderActivity extends BaseActivity {
         boolean handMissingLongEnough = now - lastHandSeenTime >= NO_HAND_FALLBACK_DELAY_MS;
 
         if (!handMissing || !closeEnough || !handMissingLongEnough) return;
-        if (awaitingHoldingConfirmation || awaitingFindAnotherConfirmation) return;
+        if (awaitingHoldingConfirmation || awaitingFindAnotherConfirmation
+                || retrievalEngagedAt > 0) return;
         if (now - lastNoHandFallbackTts < NO_HAND_FALLBACK_INTERVAL_MS) return;
 
         lastNoHandFallbackTts = now;
         promptReachForObject();
     }
 
-    private boolean isLikelyHandOcclusion(Rect objectBox, Rect handBox) {
-        if (objectBox == null || handBox == null || handBox.isEmpty()) return false;
-        // Keep an old box briefly through real occlusion, but never indefinitely because
-        // a large foreground hand happens to overlap a target that is farther away.
-        if (SystemClock.elapsedRealtime() - lastDetectionSeenTime > HAND_OCCLUSION_MAX_AFTER_LAST_SEEN_MS
-                || isHandTooCloseToCamera(objectBox, handBox)) {
-            return false;
-        }
-
-        // Proximity is expected during reach guidance; call it occlusion only when
-        // the hand actually covers most of the target box.
-        return isHandCoveringObject(objectBox, handBox);
-    }
-
-    private boolean isPotentialLiveHandOcclusion(Rect objectBox, Rect handBox,
-                                                 float sourceProximity, float sourceWidthRatio) {
-        if (objectBox == null || handBox == null || handBox.isEmpty()
-                || !isCloseEnoughForHandGuidance(sourceProximity, sourceWidthRatio)) {
-            return false;
-        }
-        float objectArea = Math.max(1f, objectBox.width() * (float) objectBox.height());
-        return getIntersectionArea(objectBox, handBox) / objectArea >= 0.30f;
-    }
-
     private boolean hasStableHandObjectContact(Rect objectBox, Rect handBox) {
+        long now = SystemClock.elapsedRealtime();
         if (!isPlausibleHandObjectContact(objectBox, handBox)) {
-            handContactStartedAt = 0;
+            if (now - lastPlausibleContactAt > HAND_CONTACT_DROPOUT_MS) handContactStartedAt = 0;
             return false;
         }
 
-        long now = SystemClock.elapsedRealtime();
+        lastPlausibleContactAt = now;
         if (handContactStartedAt == 0) handContactStartedAt = now;
         boolean stable = now - handContactStartedAt >= HAND_CONTACT_STABLE_MS;
         if (stable) lastLiveHandContactAt = now;
@@ -1148,12 +1759,31 @@ public class FinderActivity extends BaseActivity {
         float objectArea = Math.max(1f, objectBox.width() * (float) objectBox.height());
         float overlapRatio = getIntersectionArea(objectBox, handBox) / objectArea;
         boolean handCoversObject = overlapRatio >= HAND_COVERS_OBJECT_RATIO;
-        if (isHandTooCloseToCamera(objectBox, handBox) && !handCoversObject) {
+        // Overlapping on screen is not touching: a hand still near the camera covers the
+        // object's image long before it reaches the object.
+        if (isHandFarInFrontOfObject(objectBox, handBox)) {
             return false;
         }
-        // A hand moving toward the object is guidance, not proof it has reached it.
-        // Require a substantial actual overlap before starting the contact timer.
-        return handCoversObject || overlapRatio >= 0.30f;
+        // A hand moving toward the object is guidance, not proof it has reached it. A modest
+        // overlap is enough to start the timer, so the question comes while the object is
+        // still largely visible rather than after the hand has covered it.
+        return handCoversObject || overlapRatio >= HAND_CONTACT_MIN_OVERLAP;
+    }
+
+    /** The box touches the preview border, so the object was partly out of view. */
+    private boolean isNearFrameEdge(Rect box) {
+        int width = getPreviewWidth();
+        int height = getPreviewHeight();
+        int marginX = Math.round(width * FRAME_EDGE_MARGIN_RATIO);
+        int marginY = Math.round(height * FRAME_EDGE_MARGIN_RATIO);
+        return box.left <= marginX || box.top <= marginY
+                || box.right >= width - marginX || box.bottom >= height - marginY;
+    }
+
+    /** The hand overlaps the object's box or its small margin. */
+    private boolean isHandOverArea(Rect objectBox, Rect handBox) {
+        return objectBox != null && handBox != null && !handBox.isEmpty()
+                && getIntersectionArea(expandObjectBox(objectBox), handBox) > 0f;
     }
 
     private boolean isHandCoveringObject(Rect objectBox, Rect handBox) {
@@ -1163,23 +1793,47 @@ public class FinderActivity extends BaseActivity {
     }
 
     /**
-     * A hand landmark box often surrounds the wrist and fingers, so requiring the
-     * entire hand box to cover the object misses normal grasping. This inner-expanded
-     * zone represents the point where the hand has reached the detected target.
+     * The buffer around the object where the hand is within reach. It scales with the
+     * object so a large object gets a proportionally wider approach margin.
      */
-    private Rect getRetrievalContactZone(Rect objectBox) {
+    private Rect getReachZone(Rect objectBox) {
         Rect zone = new Rect(objectBox);
-        int horizontalPad = Math.max(dp(12), Math.round(objectBox.width() * 0.20f));
-        int verticalPad = Math.max(dp(12), Math.round(objectBox.height() * 0.20f));
+        int horizontalPad = Math.max(dp(HAND_REACH_ZONE_MIN_DP),
+                Math.round(objectBox.width() * HAND_REACH_ZONE_RATIO));
+        int verticalPad = Math.max(dp(HAND_REACH_ZONE_MIN_DP),
+                Math.round(objectBox.height() * HAND_REACH_ZONE_RATIO));
         zone.inset(-horizontalPad, -verticalPad);
         return zone;
     }
 
-    private boolean isHandTooCloseToCamera(Rect objectBox, Rect handBox) {
+    private boolean isHandInReachZone(Rect objectBox, Rect handBox) {
+        return objectBox != null && handBox != null && !handBox.isEmpty()
+                && Rect.intersects(getReachZone(objectBox), handBox);
+    }
+
+    /** The hand fills so much of the view that the camera cannot see past it. */
+    private boolean isHandBlockingCamera(Rect handBox) {
+        if (handBox == null || handBox.isEmpty()) return false;
+        float previewArea = Math.max(1f, getPreviewWidth() * (float) getPreviewHeight());
+        return handBox.width() * (float) handBox.height() / previewArea >= HAND_BLOCKS_CAMERA_AREA;
+    }
+
+    /**
+     * Apparent size scales with 1/distance, so (hand apparent / object apparent) times
+     * (object real / hand real) is the object's distance over the hand's. Well above 1, the
+     * hand is still between the camera and the object. The object box should be the
+     * unoccluded anchor; a box shrunk by the hand would overstate the ratio.
+     */
+    private boolean isHandFarInFrontOfObject(Rect objectBox, Rect handBox) {
         if (objectBox == null || handBox == null || handBox.isEmpty()) return false;
-        float objectArea = Math.max(1f, objectBox.width() * (float) objectBox.height());
-        float handArea = Math.max(1f, handBox.width() * (float) handBox.height());
-        return handArea > objectArea * HAND_CONTACT_MAX_AREA_RATIO;
+        float objectRealSize = ObjectCatalog.typicalSizeMeters(targetObject);
+        if (objectRealSize <= 0f) return isHandBlockingCamera(handBox);
+        // Remove the padding added around the landmarks in mapHandLandmarksToScreen.
+        float handApparent = Math.max(handBox.width(), handBox.height()) - 2f * dp(18);
+        float objectApparent = Math.max(objectBox.width(), objectBox.height());
+        if (handApparent <= 0f || objectApparent <= 0f) return false;
+        float depthRatio = (handApparent / objectApparent) * (objectRealSize / HAND_TYPICAL_SIZE_M);
+        return depthRatio > HAND_IN_FRONT_DEPTH_RATIO;
     }
 
     private Rect expandObjectBox(Rect objectBox) {
@@ -1198,6 +1852,15 @@ public class FinderActivity extends BaseActivity {
         return right > left && bottom > top ? (right - left) * (float) (bottom - top) : 0f;
     }
 
+    /**
+     * "Is this the one you are looking for? Say yes or no" is a spoken question. Without the
+     * voice guide the microphone would open with nothing asked, so the question is skipped
+     * and hand guidance ends at the "Ready to grab" cue instead.
+     */
+    private boolean isHoldingConfirmationEnabled() {
+        return HAND_RETRIEVAL_CONFIRMATION_ENABLED && AppPreferences.isVoiceGuideEnabled(this);
+    }
+
     private boolean shouldAskHoldingConfirmationAgain() {
         if (awaitingHoldingConfirmation || awaitingFindAnotherConfirmation) return false;
         long now = SystemClock.elapsedRealtime();
@@ -1206,49 +1869,89 @@ public class FinderActivity extends BaseActivity {
                 && now - lastHoldingConfirmationPrompt >= HOLDING_CONFIRMATION_REPEAT_MS;
     }
 
-    private void promptHandOcclusion() {
-        long now = SystemClock.elapsedRealtime();
-        if (now - lastHandOcclusionTts < HAND_OCCLUSION_TTS_INTERVAL_MS
-                || awaitingHoldingConfirmation
-                || awaitingFindAnotherConfirmation) {
-            return;
+    private boolean holdingAttemptsExhausted() {
+        return hasAskedHoldingConfirmation
+                && holdingConfirmationAttempts >= HOLDING_CONFIRMATION_MAX_ATTEMPTS;
+    }
+
+    /**
+     * Drops a yes/no question whose listening window closed without an answer (Cancel,
+     * the app going to the background, or no microphone access). Otherwise the flag stays
+     * set and silences hand guidance and every later question.
+     */
+    private void abandonPendingConfirmation(boolean announce) {
+        boolean wasHolding = awaitingHoldingConfirmation;
+        if (wasHolding) {
+            awaitingHoldingConfirmation = false;
+            // Restart the repeat interval so the question is not asked again immediately.
+            lastHoldingConfirmationPrompt = SystemClock.elapsedRealtime();
         }
-        lastHandOcclusionTts = now;
-        if (voiceFeedback != null) {
-            voiceFeedback.speakAmbient("The object is partly hidden. Keep your hand steady while I track its last position.",
-                    "hand_occlusion", HAND_OCCLUSION_TTS_INTERVAL_MS);
+        awaitingFindAnotherConfirmation = false;
+        awaitingRepeatConfirmation = false;
+        suggestedRepeatObject = null;
+        if (announce && wasHolding && targetObject != null) {
+            speak("Okay. I'll keep tracking the " + targetNameForSpeech() + " and guiding your hand.");
         }
     }
 
     private String buildHandGuidance(Rect objectBox, Rect handBox) {
-        float distance = getHandDistanceRatio(objectBox, handBox);
+        float gap = getHandGapRatio(objectBox, handBox);
         String direction = getHandMoveDirection(objectBox, handBox);
-        if (distance > HAND_FAR_DISTANCE) {
-            return "Move your hand slightly " + direction + ".";
+        if (gap > HAND_FAR_GAP) {
+            return "Move your hand " + direction + ".";
         }
-        if (distance > HAND_APPROACHING_DISTANCE) {
-            return "Almost there, a little " + direction + ".";
+        if (gap > HAND_NEAR_GAP) {
+            return "A little " + direction + ".";
         }
-        return "Very close, keep moving " + direction + ".";
+        return "Almost there. A bit " + direction + ".";
     }
 
     private String getHandMoveDirection(Rect objectBox, Rect handBox) {
         float dx = objectBox.exactCenterX() - handBox.exactCenterX();
         float dy = objectBox.exactCenterY() - handBox.exactCenterY();
-        if (Math.abs(dx) > Math.abs(dy)) {
+        float absX = Math.abs(dx);
+        float absY = Math.abs(dy);
+        boolean horizontal = absX > absY;
+        if (lastHandGuidanceHorizontal != null && lastHandGuidanceHorizontal != horizontal) {
+            float dominance = horizontal ? absX / Math.max(1f, absY) : absY / Math.max(1f, absX);
+            if (dominance < HAND_DIRECTION_SWITCH_RATIO) horizontal = lastHandGuidanceHorizontal;
+        }
+        lastHandGuidanceHorizontal = horizontal;
+        if (horizontal) {
             return dx > 0 ? "right" : "left";
         }
         return dy > 0 ? "lower" : "higher";
     }
 
-    private float getHandDistanceRatio(Rect objectBox, Rect handBox) {
-        float dx = objectBox.exactCenterX() - handBox.exactCenterX();
-        float dy = objectBox.exactCenterY() - handBox.exactCenterY();
-        float distance = (float) Math.sqrt(dx * dx + dy * dy);
-        float screenW = Math.max(1f, binding.cameraPreview.getWidth());
-        float screenH = Math.max(1f, binding.cameraPreview.getHeight());
+    /** Edge-to-edge gap between hand and object as a fraction of the preview diagonal. */
+    private float getHandGapRatio(Rect objectBox, Rect handBox) {
+        float dx = Math.max(0f, Math.max(objectBox.left - handBox.right, handBox.left - objectBox.right));
+        float dy = Math.max(0f, Math.max(objectBox.top - handBox.bottom, handBox.top - objectBox.bottom));
+        float screenW = getPreviewWidth();
+        float screenH = getPreviewHeight();
         float diagonal = (float) Math.sqrt(screenW * screenW + screenH * screenH);
-        return distance / diagonal;
+        return (float) Math.sqrt(dx * dx + dy * dy) / Math.max(1f, diagonal);
+    }
+
+    /**
+     * Marks the start of the final reach (reach prompt issued or a hand is being guided).
+     * From here a lost or shrunken detection is treated as occlusion, so approach-phase
+     * prompts are suppressed and anything still queued from that phase is cut off.
+     */
+    private void engageRetrieval() {
+        if (retrievalEngagedAt > 0) return;
+        retrievalEngagedAt = SystemClock.elapsedRealtime();
+        if (voiceFeedback != null) voiceFeedback.cancelGuidanceMessages(APPROACH_PROMPT_CATEGORIES);
+    }
+
+    /** Only a clear, hand-free, uninterrupted view of the object counts as the user withdrawing. */
+    private void releaseRetrievalIfWithdrawn(long now) {
+        if (retrievalEngagedAt <= 0) return;
+        if (now - retrievalEngagedAt > RETRIEVAL_RELEASE_MS
+                && now - lastHandSeenTime > RETRIEVAL_RELEASE_MS
+                && now - lastDetectionMissAt > RETRIEVAL_RELEASE_MS) {
+            retrievalEngagedAt = 0;
+        }
     }
 
     private void clearTrackingState(String targetSnapshot) {
@@ -1257,16 +1960,24 @@ public class FinderActivity extends BaseActivity {
             return;
         }
         boolean wasLocked = isTrackingLocked;
-        String lastKnownView = getLastKnownViewDescription(lastKnownTrackingBox);
+        String lastKnownView = getReturnDirection(lastKnownTrackingBox);
         stopHapticRadar();
         hideBoundingBox();
         binding.handGuidanceOverlay.clear();
         binding.detectedResultPanel.setVisibility(View.GONE);
-        consecutiveMissedDetections = 0;
         lastMoveCloserTts = 0;
+        lastHandAtTargetAt = 0;
         lastSpokenApproachBand = null;
+        if (handGuidanceIntroductionSpoken || retrievalEngagedAt > 0) {
+            handGuidanceLostAt = SystemClock.elapsedRealtime();
+        }
         handGuidanceIntroductionSpoken = false;
+        retrievalEngagedAt = 0;
+        lastPlausibleContactAt = 0;
         lastHandGuidanceText = null;
+        lastHandGuidanceGap = -1f;
+        lastHandGuidanceHorizontal = null;
+        reachZoneCueGiven = false;
         lastHandGuidanceTts = 0;
         lastKnownTrackingBox = null;
         handGuidanceAnchorBox = null;
@@ -1274,6 +1985,7 @@ public class FinderActivity extends BaseActivity {
         lastKnownTrackingConfidence = 0f;
         lastKnownTrackingProximity = 0f;
         lastKnownTrackingWidthRatio = 0f;
+        lastKnownTrackingDistance = -1f;
         radarRetrievalStartedAt = 0;
         lastReachInstructionAt = 0;
         reachInstructionSent = false;
@@ -1286,9 +1998,9 @@ public class FinderActivity extends BaseActivity {
             searchStartedAt = SystemClock.elapsedRealtime();
             lastNotYetVisibleTts = 0;
             if (wasLocked) {
-                speak("I lost sight of the " + targetSnapshot + " for a moment. "
-                        + "It was last seen " + lastKnownView + ". Keep the phone still, then gently return "
-                        + "to the direction where the haptic pulses were strongest. I will keep searching.");
+                trackingLostAt = SystemClock.elapsedRealtime();
+                // Short and directional; a quick re-find cuts it off with "Got the ... again".
+                speak("Lost the " + targetSnapshot + ". " + lastKnownView);
             }
             startSearchReminder();
         }
@@ -1357,7 +2069,7 @@ public class FinderActivity extends BaseActivity {
         speakAdaptiveGuidance(
                 "search_reminder",
                 "The requested object is not visible yet.",
-                "Keep scanning for the " + targetObject + ". " + buildAdaptiveSearchGuidance(now),
+                "Keep scanning for the " + targetNameForSpeech() + ". " + buildAdaptiveSearchGuidance(now),
                 "search_reminder",
                 SEARCH_HELP_INTERVAL_MS);
         mainHandler.postDelayed(searchReminderRunnable, SEARCH_HELP_INTERVAL_MS);
@@ -1386,12 +2098,14 @@ public class FinderActivity extends BaseActivity {
         }
 
         lastFrameLuma = total / samples.length;
-        if (lastLumaSamples == null) {
+        // Read once: the main thread may reset the field to null mid-loop.
+        float[] previousSamples = lastLumaSamples;
+        if (previousSamples == null) {
             lastSceneMotionAt = now;
         } else {
             float totalDifference = 0f;
             for (int i = 0; i < samples.length; i++) {
-                totalDifference += Math.abs(samples[i] - lastLumaSamples[i]);
+                totalDifference += Math.abs(samples[i] - previousSamples[i]);
             }
             if (totalDifference / samples.length >= SCENE_CHANGE_LUMA_THRESHOLD) {
                 lastSceneMotionAt = now;
@@ -1496,8 +2210,7 @@ public class FinderActivity extends BaseActivity {
         lastSpokenColor = null;
         lastSpokenLabel = null;
         currentState = DetectionState.IDLE;
-        binding.tvStatusText.setText(getString(R.string.status_detection_timeout));
-        binding.statusDot.setBackgroundResource(R.drawable.dot_white);
+        updateDetectionStatus(StatusState.NOT_FOUND, targetSnapshot);
         binding.scanningContainer.setVisibility(View.GONE);
         binding.detectedResultPanel.setVisibility(View.GONE);
         updateTargetLabel(targetSnapshot == null || targetSnapshot.trim().isEmpty()
@@ -1516,7 +2229,7 @@ public class FinderActivity extends BaseActivity {
         return Bitmap.createBitmap(src, 0, 0, src.getWidth(), src.getHeight(), matrix, true);
     }
 
-    private Bitmap applyLetterbox(Bitmap src, int targetWidth, int targetHeight) {
+    private Bitmap applyLetterbox(Bitmap src, int targetWidth, int targetHeight, String target) {
         float scale = Math.min((float) targetWidth / src.getWidth(), (float) targetHeight / src.getHeight());
         int scaledW = Math.round(src.getWidth() * scale);
         int scaledH = Math.round(src.getHeight() * scale);
@@ -1527,7 +2240,10 @@ public class FinderActivity extends BaseActivity {
         Canvas canvas = new Canvas(output);
         canvas.drawColor(Color.rgb(114, 114, 114));
         Bitmap scaled = Bitmap.createScaledBitmap(src, scaledW, scaledH, true);
-        canvas.drawBitmap(scaled, padLeft, padTop, null);
+        // Enhance after downscaling, so it costs a model-size image rather than a camera frame.
+        Bitmap enhanced = maybeEnhanceForDetection(scaled, target);
+        canvas.drawBitmap(enhanced, padLeft, padTop, null);
+        if (enhanced != scaled) enhanced.recycle();
         if (scaled != src) scaled.recycle();
         
         letterboxScale = scale; letterboxPadLeft = padLeft; letterboxPadTop = padTop;
@@ -1535,10 +2251,52 @@ public class FinderActivity extends BaseActivity {
     }
 
     /**
+     * Camera thread. In a dark, washed-out or flat scene, or for a glare-prone target, returns
+     * a gamma/CLAHE-enhanced copy for the detector; otherwise {@code scaled} itself.
+     *
+     * <p>The model was trained on unprocessed photos, so enhancement can also hurt. In those
+     * conditions the raw and enhanced versions alternate while neither finds the target, and
+     * whichever produced the last hit is kept while it keeps hitting. A scene where raw frames
+     * work thus loses at most every other frame, never all of them.
+     */
+    private Bitmap maybeEnhanceForDetection(Bitmap scaled, String target) {
+        lastFrameEnhanced = false;
+        if (!DETECTION_ENHANCEMENT_ENABLED) return scaled;
+        int width = scaled.getWidth();
+        int height = scaled.getHeight();
+        int count = width * height;
+        if (enhancePixels.length < count) enhancePixels = new int[count];
+        scaled.getPixels(enhancePixels, 0, width, 0, 0, width, height);
+        float[] stats = ImageEnhancer.measure(enhancePixels, count);
+        ImageEnhancer.Condition condition = ImageEnhancer.classify(stats[0], stats[1]);
+        boolean glareProne = isGlareProneTarget(target);
+        if (condition == ImageEnhancer.Condition.NORMAL && !glareProne) return scaled;
+
+        boolean useEnhanced = lastFrameHit ? lastHitEnhanced : !lastFrameTriedEnhanced;
+        lastFrameTriedEnhanced = useEnhanced;
+        if (!useEnhanced) return scaled;
+        ImageEnhancer.enhance(enhancePixels, width, height, condition, glareProne);
+        lastFrameEnhanced = true;
+        return Bitmap.createBitmap(enhancePixels, 0, width, width, height, Bitmap.Config.ARGB_8888);
+    }
+
+    /** Transparent or reflective classes, whose rims glare washes out. */
+    private static boolean isGlareProneTarget(String target) {
+        return "cup".equals(target) || "glasses".equals(target) || "water bottle".equals(target);
+    }
+
+    /** Records whether this frame found the target, for the raw/enhanced alternation. */
+    private void recordEnhancementOutcome(boolean hit) {
+        lastFrameHit = hit;
+        if (hit) lastHitEnhanced = lastFrameEnhanced;
+    }
+
+    /**
      * Debug-only evidence of the exact image supplied to TFLite. Compare this image
      * in Colab with the Android raw-score Logcat output before changing the model.
      */
     private void maybeSaveModelInputDiagnostic(Bitmap modelInput, long now) {
+        if (!SAVE_MODEL_INPUT_DIAGNOSTIC) return;
         if (now - lastModelInputDiagnosticSaveAt < 5000L) return;
         lastModelInputDiagnosticSaveAt = now;
         File root = getExternalFilesDir("debug");
@@ -1559,19 +2317,14 @@ public class FinderActivity extends BaseActivity {
         // into an oversized edge-to-edge UI box.
         RectF sourceBox = mapModelBoxToSource(box, uprightW, uprightH);
 
-        int screenW = binding.cameraPreview.getWidth();
-        int screenH = binding.cameraPreview.getHeight();
-        if (screenW == 0) screenW = getResources().getDisplayMetrics().widthPixels;
-        if (screenH == 0) screenH = getResources().getDisplayMetrics().heightPixels;
-
-        float scale = Math.max((float) screenW / uprightW, (float) screenH / uprightH);
-        float previewW = uprightW * scale; float previewH = uprightH * scale;
-        float offsetX = (screenW - previewW) / 2f; float offsetY = (screenH - previewH) / 2f;
-
-        int left = Math.round(sourceBox.left * scale + offsetX);
-        int top = Math.round(sourceBox.top * scale + offsetY);
-        int right = Math.round(sourceBox.right * scale + offsetX);
-        int bottom = Math.round(sourceBox.bottom * scale + offsetY);
+        int screenW = getPreviewWidth();
+        int screenH = getPreviewHeight();
+        RectF mapped = mapSourceRectToScreen(sourceBox,
+                visibleRectOrFullFrame(analysisVisibleRect, uprightW, uprightH), screenW, screenH);
+        int left = Math.round(mapped.left);
+        int top = Math.round(mapped.top);
+        int right = Math.round(mapped.right);
+        int bottom = Math.round(mapped.bottom);
 
         left = Math.max(0, Math.min(screenW, left));
         top = Math.max(0, Math.min(screenH, top));
@@ -1579,6 +2332,39 @@ public class FinderActivity extends BaseActivity {
         bottom = Math.max(0, Math.min(screenH, bottom));
 
         return new Rect(left, top, right, bottom);
+    }
+
+    /** Maps upright analysis-frame pixels to PreviewView pixels; see {@link PreviewMapping}. */
+    private static RectF mapSourceRectToScreen(RectF source, RectF visible, int screenW, int screenH) {
+        float[] mapped = PreviewMapping.sourceToScreen(
+                new float[] { source.left, source.top, source.right, source.bottom },
+                new float[] { visible.left, visible.top, visible.right, visible.bottom },
+                screenW, screenH);
+        return new RectF(mapped[0], mapped[1], mapped[2], mapped[3]);
+    }
+
+    private static RectF computeUprightVisibleRect(Rect cropRect, int bufferW, int bufferH, int rotationDeg) {
+        float[] visible = cropRect == null
+                ? PreviewMapping.uprightVisibleRegion(0, 0, 0, 0, bufferW, bufferH, rotationDeg)
+                : PreviewMapping.uprightVisibleRegion(cropRect.left, cropRect.top,
+                        cropRect.right, cropRect.bottom, bufferW, bufferH, rotationDeg);
+        return new RectF(visible[0], visible[1], visible[2], visible[3]);
+    }
+
+    private static RectF visibleRectOrFullFrame(RectF visible, int uprightW, int uprightH) {
+        return visible != null && visible.width() > 0 && visible.height() > 0
+                && visible.right <= uprightW + 1 && visible.bottom <= uprightH + 1
+                ? visible : new RectF(0, 0, uprightW, uprightH);
+    }
+
+    private int getPreviewWidth() {
+        int width = binding.cameraPreview.getWidth();
+        return width > 0 ? width : getResources().getDisplayMetrics().widthPixels;
+    }
+
+    private int getPreviewHeight() {
+        int height = binding.cameraPreview.getHeight();
+        return height > 0 ? height : getResources().getDisplayMetrics().heightPixels;
     }
 
     private RectF mapModelBoxToSource(RectF box, int sourceWidth, int sourceHeight) {
@@ -1594,190 +2380,47 @@ public class FinderActivity extends BaseActivity {
     }
 
     private String getDominantColorName(Bitmap sourceFrame, RectF box) {
-        // Use the inner object area. Detector boxes include background, especially near their edges.
+        // PROCESS 6C - COLOR: Sample only the central core of the box (no background bleed or
+        // edge noise) and hand it to the HSV classifier. One getPixels call per sampled row
+        // keeps this to a few dozen JNI calls with no bitmap copies on the camera thread.
         if (sourceFrame == null || sourceFrame.isRecycled() || box == null) return COLOR_UNCLEAR;
-        if (!openCvReady) return getFallbackColorName(sourceFrame, box);
-        int left = Math.max(0, Math.round(box.left));
-        int top = Math.max(0, Math.round(box.top));
-        int right = Math.min(sourceFrame.getWidth(), Math.round(box.right));
-        int bottom = Math.min(sourceFrame.getHeight(), Math.round(box.bottom));
-        int w = right - left;
-        int h = bottom - top;
-        if (w <= 4 || h <= 4) return getFallbackColorName(sourceFrame, box);
+        float insetX = box.width() * (1f - ColorClassifier.CORE_FRACTION) / 2f;
+        float insetY = box.height() * (1f - ColorClassifier.CORE_FRACTION) / 2f;
+        int frameW = sourceFrame.getWidth();
+        int frameH = sourceFrame.getHeight();
+        int left = Math.max(0, Math.round(box.left + insetX));
+        int top = Math.max(0, Math.round(box.top + insetY));
+        int right = Math.min(frameW, Math.round(box.right - insetX));
+        int bottom = Math.min(frameH, Math.round(box.bottom - insetY));
+        int coreW = right - left;
+        int coreH = bottom - top;
+        if (coreW < 2 || coreH < 2) return COLOR_UNCLEAR;
 
-        Mat rgba = new Mat();
-        Mat rgb = new Mat();
-        Mat correctedRgb = null;
-        Mat lab = new Mat();
-        Mat samples = null;
-        Mat labels = new Mat();
-        Mat centers = new Mat();
-        Bitmap objectCrop = null;
-
-        try {
-            // Converting the crop instead of the full frame avoids processing unrelated pixels.
-            objectCrop = Bitmap.createBitmap(sourceFrame, left, top, w, h);
-            Utils.bitmapToMat(objectCrop, rgba);
-            Imgproc.cvtColor(rgba, rgb, Imgproc.COLOR_RGBA2RGB);
-
-            int steps = 18;
-            int maxSamples = steps * steps;
-            int[][] sampleRgb = new int[maxSamples][3];
-            int sampleCount = 0;
-            float[] hsv = new float[3];
-            float cx = w / 2f;
-            float cy = h / 2f;
-            float rx = Math.max(1f, w * COLOR_INNER_ELLIPSE_RADIUS);
-            float ry = Math.max(1f, h * COLOR_INNER_ELLIPSE_RADIUS);
-
-            for (int row = 0; row < steps; row++) {
-                for (int col = 0; col < steps; col++) {
-                    int px = Math.max(0, Math.min(w - 1, Math.round((col + 0.5f) * w / steps)));
-                    int py = Math.max(0, Math.min(h - 1, Math.round((row + 0.5f) * h / steps)));
-                    float nx = (px - cx) / rx;
-                    float ny = (py - cy) / ry;
-                    if (nx * nx + ny * ny > 1f) continue;
-
-                    double[] pixel = rgb.get(py, px);
-                    if (pixel == null || pixel.length < 3) continue;
-                    int r = clamp255(pixel[0]);
-                    int g = clamp255(pixel[1]);
-                    int b = clamp255(pixel[2]);
-                    Color.RGBToHSV(r, g, b, hsv);
-                    if (hsv[2] < COLOR_DARK_PIXEL_THRESHOLD) continue;
-
-                    sampleRgb[sampleCount][0] = r;
-                    sampleRgb[sampleCount][1] = g;
-                    sampleRgb[sampleCount][2] = b;
-                    sampleCount++;
-                }
+        int cols = Math.min(ColorClassifier.GRID, coreW);
+        int rows = Math.min(ColorClassifier.GRID, coreH);
+        if (colorRowBuffer.length < coreW) colorRowBuffer = new int[coreW];
+        int count = 0;
+        for (int row = 0; row < rows; row++) {
+            int y = top + (int) ((row + 0.5f) * coreH / rows);
+            sourceFrame.getPixels(colorRowBuffer, 0, coreW, left, y, coreW, 1);
+            for (int col = 0; col < cols; col++) {
+                colorSampleBuffer[count++] = colorRowBuffer[(int) ((col + 0.5f) * coreW / cols)];
             }
-
-            if (sampleCount < COLOR_MIN_SAMPLES) return getFallbackColorName(sourceFrame, box);
-
-            // Do not white-balance from the object's own pixels. That turns genuinely
-            // red/blue/green objects toward gray. Cluster the sampled camera colors as-is.
-            correctedRgb = new Mat(sampleCount, 1, CvType.CV_8UC3);
-            int correctedCount = 0;
-            int brightNeutralCount = 0;
-            byte[] correctedPixel = new byte[3];
-            for (int i = 0; i < sampleCount; i++) {
-                int r = sampleRgb[i][0];
-                int g = sampleRgb[i][1];
-                int b = sampleRgb[i][2];
-                Color.RGBToHSV(r, g, b, hsv);
-                if (hsv[2] < COLOR_DARK_PIXEL_THRESHOLD) continue;
-                if (isBrightNeutralPixel(r, g, b)) brightNeutralCount++;
-                correctedPixel[0] = (byte) r;
-                correctedPixel[1] = (byte) g;
-                correctedPixel[2] = (byte) b;
-                correctedRgb.put(correctedCount, 0, correctedPixel);
-                correctedCount++;
-            }
-
-            if (correctedCount < COLOR_MIN_SAMPLES) return getFallbackColorName(sourceFrame, box);
-
-            // A substantial, neutral bright center is white, not "gray in shadow".
-            if (brightNeutralCount >= Math.max(3, Math.round(correctedCount * 0.30f))) {
-                return "white";
-            }
-
-            Mat correctedView = correctedRgb.rowRange(0, correctedCount);
-            Imgproc.cvtColor(correctedView, lab, Imgproc.COLOR_RGB2Lab);
-            samples = new Mat(correctedCount, 3, CvType.CV_32F);
-            float[] labPixel = new float[3];
-            for (int i = 0; i < correctedCount; i++) {
-                double[] labValue = lab.get(i, 0);
-                if (labValue == null || labValue.length < 3) continue;
-                labPixel[0] = (float) labValue[0];
-                labPixel[1] = (float) labValue[1];
-                labPixel[2] = (float) labValue[2];
-                samples.put(i, 0, labPixel);
-            }
-
-            TermCriteria criteria = new TermCriteria(
-                    TermCriteria.EPS + TermCriteria.MAX_ITER, 8, 1.0);
-            Core.kmeans(samples, 3, labels, criteria, 1, Core.KMEANS_PP_CENTERS, centers);
-            String clusteredColor = nameDominantOpenCvLabCluster(labels, centers, correctedCount);
-            return isStableColorForFeedback(clusteredColor)
-                    ? clusteredColor
-                    : COLOR_UNCLEAR;
-        } catch (Exception e) {
-            Log.w(TAG, "OpenCV color detection failed", e);
-            return getFallbackColorName(sourceFrame, box);
-        } finally {
-            rgba.release();
-            rgb.release();
-            if (correctedRgb != null) correctedRgb.release();
-            lab.release();
-            if (samples != null) samples.release();
-            labels.release();
-            centers.release();
-            if (objectCrop != null && !objectCrop.isRecycled()) objectCrop.recycle();
         }
+        return ColorClassifier.classify(colorSampleBuffer, count);
     }
 
-    private boolean isBrightNeutralPixel(int r, int g, int b) {
-        int max = Math.max(r, Math.max(g, b));
-        int min = Math.min(r, Math.min(g, b));
-        return min >= COLOR_WHITE_CHANNEL_MIN && max - min <= COLOR_WHITE_MAX_CHANNEL_SPREAD;
-    }
-
-    private String nameDominantOpenCvLabCluster(Mat labels, Mat centers, int sampleCount) {
-        int[] counts = new int[3];
-        for (int i = 0; i < sampleCount; i++) {
-            double[] label = labels.get(i, 0);
-            if (label == null || label.length == 0) continue;
-            int index = Math.max(0, Math.min(2, (int) label[0]));
-            counts[index]++;
-        }
-
-        int best = -1;
-        int minClusterSize = Math.max(COLOR_MIN_CLUSTER_SAMPLES, Math.round(sampleCount * 0.35f));
-        for (int c = 0; c < 3; c++) {
-            if (counts[c] < minClusterSize) continue;
-            if (best < 0 || counts[c] > counts[best]) best = c;
-        }
-        if (best < 0) return COLOR_UNCLEAR;
-        double[] center = centers.get(best, 0);
-        if (center == null || center.length < 3) return COLOR_UNCLEAR;
-        double[] lab = {
-                center[0] * 100.0 / 255.0,
-                center[1] - 128.0,
-                center[2] - 128.0
-        };
-        return nearestColorNameFromLab(lab);
-    }
-
-    private String nearestColorNameFromLab(double[] lab) {
-        double chroma = Math.sqrt(lab[1] * lab[1] + lab[2] * lab[2]);
-        if (chroma < 8.5) {
-            if (lab[0] < 28) return "black";
-            if (lab[0] > 82) return "white";
-            return lab[0] > 66 ? "silver" : "gray";
-        }
-
-        String[] names = {"red", "blue", "green", "yellow", "orange", "brown", "purple", "pink", "beige"};
-        int[][] rgb = {
-                {200, 45, 45}, {55, 95, 210}, {45, 150, 75},
-                {230, 195, 45}, {225, 125, 35}, {125, 78, 42},
-                {130, 75, 175}, {225, 115, 165}, {205, 180, 135}
-        };
-        String best = COLOR_UNCLEAR;
-        double bestDistance = Double.MAX_VALUE;
-        for (int i = 0; i < names.length; i++) {
-            double distance = labDistance(lab, rgbToLab(rgb[i][0], rgb[i][1], rgb[i][2]));
-            if (distance < bestDistance) {
-                bestDistance = distance;
-                best = names[i];
-            }
-        }
-        // Basic color names are intentionally coarse. If the sampled color is far
-        // from every supported category, do not confidently guess a label.
-        return bestDistance <= 36.0 ? best : COLOR_UNCLEAR;
+    /** A hand over the object would be sampled as skin; skip those frames entirely. */
+    private boolean isHandOverObject(Rect objectBox, long now) {
+        Rect hand = lastKnownHandBox;
+        return hand != null && now - lastHandSeenTime <= HAND_MISSING_GRACE_MS
+                && Rect.intersects(objectBox, hand);
     }
 
     private String updateStableColorName(String rawColor) {
+        // Majority vote over recent samples. A new name must win COLOR_FIRST_STABLE_COUNT
+        // votes before it is first reported (so a single frame is never spoken), and
+        // COLOR_STABLE_MIN_COUNT of the full window to replace an established name.
         if (rawColor == null || COLOR_UNCLEAR.equals(rawColor)) {
             return stableColorName;
         }
@@ -1798,155 +2441,18 @@ public class FinderActivity extends BaseActivity {
                 bestColor = entry.getKey();
             }
         }
-        if (bestCount >= COLOR_STABLE_MIN_COUNT
-                || (recentColorHistory.size() < COLOR_HISTORY_SIZE && bestCount >= 3)) {
+        int required = COLOR_UNCLEAR.equals(stableColorName)
+                ? COLOR_FIRST_STABLE_COUNT : COLOR_STABLE_MIN_COUNT;
+        if (bestCount >= required) {
             stableColorName = bestColor;
-        }
-        if (COLOR_UNCLEAR.equals(stableColorName) && !recentColorHistory.isEmpty()) {
-            stableColorName = rawColor;
         }
         return stableColorName;
     }
 
-    private String getFallbackColorName(Bitmap frame640, RectF box) {
-        if (frame640 == null || frame640.isRecycled() || box == null) return COLOR_UNCLEAR;
-
-        int frameW = frame640.getWidth();
-        int frameH = frame640.getHeight();
-        if (frameW <= 0 || frameH <= 0) return COLOR_UNCLEAR;
-
-        float insetX = Math.max(1f, box.width() * 0.22f);
-        float insetY = Math.max(1f, box.height() * 0.22f);
-        int left = Math.max(0, Math.min(frameW - 1, Math.round(box.left + insetX)));
-        int top = Math.max(0, Math.min(frameH - 1, Math.round(box.top + insetY)));
-        int right = Math.max(left + 1, Math.min(frameW, Math.round(box.right - insetX)));
-        int bottom = Math.max(top + 1, Math.min(frameH, Math.round(box.bottom - insetY)));
-        if (right <= left || bottom <= top) {
-            left = Math.max(0, Math.min(frameW - 1, Math.round(box.left)));
-            top = Math.max(0, Math.min(frameH - 1, Math.round(box.top)));
-            right = Math.max(left + 1, Math.min(frameW, Math.round(box.right)));
-            bottom = Math.max(top + 1, Math.min(frameH, Math.round(box.bottom)));
-        }
-        if (right <= left || bottom <= top) return COLOR_UNCLEAR;
-
-        int[] counts = new int[13];
-        int samples = 0;
-        int brightNeutralCount = 0;
-        float[] hsv = new float[3];
-        int steps = 14;
-        float cx = (left + right) / 2f;
-        float cy = (top + bottom) / 2f;
-        float rx = Math.max(1f, (right - left) * COLOR_INNER_ELLIPSE_RADIUS);
-        float ry = Math.max(1f, (bottom - top) * COLOR_INNER_ELLIPSE_RADIUS);
-        for (int row = 0; row < steps; row++) {
-            for (int col = 0; col < steps; col++) {
-                int px = Math.max(0, Math.min(frameW - 1,
-                        left + Math.round((col + 0.5f) * (right - left) / steps)));
-                int py = Math.max(0, Math.min(frameH - 1,
-                        top + Math.round((row + 0.5f) * (bottom - top) / steps)));
-                float nx = (px - cx) / rx;
-                float ny = (py - cy) / ry;
-                if (nx * nx + ny * ny > 1f) continue;
-                int pixel = frame640.getPixel(px, py);
-                int r = Color.red(pixel);
-                int g = Color.green(pixel);
-                int b = Color.blue(pixel);
-                Color.RGBToHSV(r, g, b, hsv);
-                if (hsv[2] < COLOR_DARK_PIXEL_THRESHOLD) continue;
-                counts[colorBucketIndex(r, g, b, hsv[0], hsv[1], hsv[2])]++;
-                if (isBrightNeutralPixel(r, g, b)) brightNeutralCount++;
-                samples++;
-            }
-        }
-
-        if (samples == 0) {
-            return COLOR_UNCLEAR;
-        }
-
-        if (brightNeutralCount >= Math.max(3, Math.round(samples * 0.30f))) {
-            return "white";
-        }
-
-        int best = 0;
-        for (int i = 1; i < counts.length; i++) {
-            if (counts[i] > counts[best]) best = i;
-        }
-        String[] names = {
-                "black", "white", "gray", "red", "blue", "green", "yellow",
-                "orange", "brown", "purple", "pink", "beige", "silver"
-        };
-        String votedColor = names[best];
-        int voteCount = counts[best];
-        if (voteCount < Math.max(5, Math.round(samples * 0.35f))) return COLOR_UNCLEAR;
-        return votedColor;
-    }
-
-    private String colorNameForBucket(int bucket) {
-        String[] names = {
-                "black", "white", "gray", "red", "blue", "green", "yellow",
-                "orange", "brown", "purple", "pink", "beige", "silver"
-        };
-        if (bucket < 0 || bucket >= names.length) return COLOR_UNCLEAR;
-        return names[bucket];
-    }
-
-    private int colorBucketIndex(int r, int g, int b, float hue, float sat, float val) {
-        if (val < 0.20f) return 0;
-        if (sat < 0.12f && val > 0.80f) return 1;
-        if (sat < 0.15f) return val > 0.64f ? 12 : 2;
-        if (hue >= 25f && hue <= 55f && val > 0.55f && sat < 0.45f && r >= g && g >= b) return 11;
-        if (hue >= 18f && hue <= 45f && val < 0.65f) return 8;
-        if (hue < 15f || hue >= 345f) return 3;
-        if (hue < 35f) return 7;
-        if (hue < 75f) return 6;
-        if (hue < 165f) return 5;
-        if (hue < 255f) return 4;
-        if (hue < 295f) return 9;
-        if (hue < 345f) return 10;
-        return 2;
-    }
-
+    /** Camera thread only. */
     private void resetColorStability() {
         recentColorHistory.clear();
         stableColorName = COLOR_UNCLEAR;
-    }
-
-    private double[] rgbToLab(int r, int g, int b) {
-        double sr = pivotRgb(r / 255.0);
-        double sg = pivotRgb(g / 255.0);
-        double sb = pivotRgb(b / 255.0);
-
-        double x = (sr * 0.4124564 + sg * 0.3575761 + sb * 0.1804375) / 0.95047;
-        double y = (sr * 0.2126729 + sg * 0.7151522 + sb * 0.0721750);
-        double z = (sr * 0.0193339 + sg * 0.1191920 + sb * 0.9503041) / 1.08883;
-
-        double fx = pivotXyz(x);
-        double fy = pivotXyz(y);
-        double fz = pivotXyz(z);
-        return new double[] {
-                Math.max(0, 116 * fy - 16),
-                500 * (fx - fy),
-                200 * (fy - fz)
-        };
-    }
-
-    private double pivotRgb(double value) {
-        return value <= 0.04045 ? value / 12.92 : Math.pow((value + 0.055) / 1.055, 2.4);
-    }
-
-    private double pivotXyz(double value) {
-        return value > 0.008856 ? Math.cbrt(value) : (7.787 * value) + (16.0 / 116.0);
-    }
-
-    private double labDistance(double[] a, double[] b) {
-        double dl = a[0] - b[0];
-        double da = a[1] - b[1];
-        double db = a[2] - b[2];
-        return Math.sqrt(dl * dl + da * da + db * db);
-    }
-
-    private int clamp255(double value) {
-        return (int) Math.max(0, Math.min(255, Math.round(value)));
     }
 
     private void showBoundingBox(Rect rect, String label, float confidence) {
@@ -1956,7 +2462,8 @@ public class FinderActivity extends BaseActivity {
             ViewGroup.LayoutParams p = binding.detectionBox.getLayoutParams();
             p.width = Math.max(1, visualBox.width()); p.height = Math.max(1, visualBox.height());
             binding.detectionBox.setLayoutParams(p);
-            binding.detectionBox.setTranslationX(visualBox.left); binding.detectionBox.setTranslationY(visualBox.top);
+            boolean wasVisible = binding.detectionBox.getVisibility() == View.VISIBLE;
+            moveOverlay(binding.detectionBox, visualBox.left, visualBox.top, wasVisible);
             binding.detectionBox.setVisibility(View.VISIBLE);
             
             if (AppPreferences.isConfidenceOverlayEnabled(this)) {
@@ -1965,8 +2472,7 @@ public class FinderActivity extends BaseActivity {
             } else {
                 binding.detectionLabel.setText(capitalize(label));
             }
-            binding.detectionLabel.setTranslationX(visualBox.left);
-            binding.detectionLabel.setTranslationY(Math.max(0, visualBox.top - 50));
+            moveOverlay(binding.detectionLabel, visualBox.left, Math.max(0, visualBox.top - 50), wasVisible);
             binding.detectionLabel.setVisibility(View.VISIBLE);
         });
     }
@@ -1989,8 +2495,21 @@ public class FinderActivity extends BaseActivity {
         });
     }
 
+    /** Glides an already visible overlay to its new place; places a newly shown one directly. */
+    private void moveOverlay(View view, float x, float y, boolean animate) {
+        view.animate().cancel();
+        if (animate) {
+            view.animate().translationX(x).translationY(y).setDuration(BOX_ANIMATION_MS).start();
+        } else {
+            view.setTranslationX(x);
+            view.setTranslationY(y);
+        }
+    }
+
     /** Hides only the stale visual detector overlay; hand guidance may still continue. */
     private void hideLiveBoundingBox() {
+        binding.detectionBox.animate().cancel();
+        binding.detectionLabel.animate().cancel();
         binding.detectionBox.setVisibility(View.GONE);
         binding.detectionLabel.setVisibility(View.GONE);
     }
@@ -2029,6 +2548,8 @@ public class FinderActivity extends BaseActivity {
             @Override public void onReadyForSpeech(Bundle params) {
                 if (myTurn != voiceTurnToken || attemptToken != recognizerAttemptToken) return;
                 recognizerReadyForSpeech = true;
+                recognizerReadyAt = SystemClock.elapsedRealtime();
+                if (beepWhenMicReady) runOnUiThread(() -> playSoundEffect(ToneGenerator.TONE_PROP_BEEP));
                 runOnUiThread(() -> tvVoiceInput.setText(
                         voiceMode == VoiceMode.CONFIRMATION
                                 ? "Listening... say yes or no"
@@ -2060,7 +2581,7 @@ public class FinderActivity extends BaseActivity {
                         handleVoiceResult(spoken);
                     });
                 } else {
-                    retryActiveListening(tvVoiceInput, getString(R.string.voice_waiting), myTurn);
+                    repromptListening(tvVoiceInput, myTurn, userSpeechStarted);
                 }
             }
             @Override public void onError(int error) {
@@ -2070,7 +2591,19 @@ public class FinderActivity extends BaseActivity {
                     tvVoiceInput.setText(getString(R.string.voice_permission_required));
                     return;
                 }
+                // Some recognizers report NO_MATCH immediately after starting; only a window
+                // that was really open for a while means the user said nothing usable.
+                boolean listenedLongEnough = userSpeechStarted || (recognizerReadyForSpeech
+                        && SystemClock.elapsedRealtime() - recognizerReadyAt >= MIN_LISTEN_BEFORE_REPROMPT_MS);
+                if (listenedLongEnough && (error == SpeechRecognizer.ERROR_NO_MATCH
+                        || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT)) {
+                    // Reopening the microphone silently left new users unsure whether to
+                    // speak again, so say what is expected.
+                    repromptListening(tvVoiceInput, myTurn, userSpeechStarted);
+                    return;
+                }
 
+                // Engine hiccups (busy, client, network) are retried quietly.
                 String message = userSpeechStarted
                         ? getString(R.string.voice_try_again)
                         : getString(R.string.voice_waiting);
@@ -2124,73 +2657,215 @@ public class FinderActivity extends BaseActivity {
         });
     }
 
+    private void repromptListening(TextView tvVoiceInput, long myTurn, boolean heardSomething) {
+        runOnUiThread(() -> {
+            if (voiceModal == null || !voiceModal.isShowing() || myTurn != voiceTurnToken) return;
+            destroySpeechRecognizer();
+            if (++voiceRepromptCount > VOICE_MAX_REPROMPTS) {
+                stopListeningAfterNoAnswer();
+                return;
+            }
+            String expected = voiceMode == VoiceMode.CONFIRMATION
+                    ? listenInstruction("say yes or no.")
+                    : listenInstruction("say one object name, such as charger or medicine.");
+            String reprompt = (heardSomething ? "Sorry, I didn't catch that. " : "I didn't hear anything. ")
+                    + expected;
+            tvVoiceInput.setText(reprompt);
+            vibratePattern(40, 60, 40);
+            if (isTalkBackOn() && !voiceModalHiddenFromTalkBack) {
+                // A voice search the user opened: TalkBack reads the re-prompt, and the
+                // microphone reopens once it has had time to finish (or it would be recorded).
+                tvVoiceInput.announceForAccessibility(reprompt);
+                mainHandler.postDelayed(() -> resumeListeningAfterReprompt(myTurn),
+                        talkBackReadingTimeMs(reprompt));
+                return;
+            }
+            if (voiceFeedback == null || !AppPreferences.isVoiceGuideEnabled(this)) {
+                mainHandler.postDelayed(() -> resumeListeningAfterReprompt(myTurn), 1500);
+                return;
+            }
+            // Release the hold so the re-prompt can play; the utterance-done listener
+            // reopens the microphone in this same window once it has been fully spoken.
+            voiceFeedback.endListeningHold();
+            voiceFeedback.speakCriticalThenListen(reprompt, "voice_reprompt");
+        });
+    }
+
+    private void resumeListeningAfterReprompt(long turn) {
+        if (voiceModal == null || !voiceModal.isShowing() || turn != voiceTurnToken
+                || activeVoiceInput == null) {
+            return;
+        }
+        if (voiceFeedback != null) voiceFeedback.beginListeningHold();
+        if (!beepWhenMicReady) playSoundEffect(ToneGenerator.TONE_PROP_BEEP);
+        activeVoiceInput.setText(getString(R.string.voice_preparing));
+        startListening(activeVoiceInput, turn);
+    }
+
+    /** Roughly how long TalkBack takes to read a message aloud, with a margin. */
+    private long talkBackReadingTimeMs(String text) {
+        return Math.max(TALKBACK_MIN_READING_MS, (long) text.length() * TALKBACK_MS_PER_CHAR);
+    }
+
+    /** Ends a listening window that got no usable answer, and says how to continue. */
+    private void stopListeningAfterNoAnswer() {
+        if (voiceModal != null) voiceModal.dismiss();
+        vibratePattern(120);
+        if (awaitingHoldingConfirmation) {
+            awaitingHoldingConfirmation = false;
+            lastHoldingConfirmationPrompt = SystemClock.elapsedRealtime();
+            speak("I didn't hear an answer. I'll keep tracking the " + targetNameForSpeech() + ".");
+            return;
+        }
+        awaitingRepeatConfirmation = false;
+        awaitingFindAnotherConfirmation = false;
+        suggestedRepeatObject = null;
+        speakOutsideSearch("I'll stop listening for now. When you're ready, tap the microphone "
+                + "button at the bottom of the screen.");
+    }
+
+    /**
+     * "After the beep, say yes or no." The beep marks when the microphone opens (with
+     * TalkBack it plays once the recognizer is ready), so it is mentioned whenever it plays.
+     */
+    private String listenInstruction(String whatToSay) {
+        boolean beepAnnouncesListening = AppPreferences.isSoundEffectsEnabled(this);
+        return beepAnnouncesListening ? "After the beep, " + whatToSay : capitalize(whatToSay);
+    }
+
     private void openVoiceModal() {
         if (Looper.myLooper() != Looper.getMainLooper()) { mainHandler.post(this::openVoiceModal); return; }
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) return;
+        if (!hasPermission(Manifest.permission.RECORD_AUDIO)) {
+            onMicrophoneUnavailable(true);
+            return;
+        }
 
         cancelActiveSearch();
         openVoiceModalWithoutCancellingSearch(VoiceMode.OBJECT);
     }
 
     private void openVoiceModalWithoutCancellingSearch(VoiceMode mode) {
+        openVoiceModalWithoutCancellingSearch(mode, false);
+    }
+
+    /**
+     * {@code askedByVoiceGuide}: the voice guide has just spoken the question this window
+     * answers. With TalkBack on, the window is then kept silent to TalkBack (it would repeat
+     * the question and be recorded). A window the user opened is read by TalkBack instead.
+     */
+    private void openVoiceModalWithoutCancellingSearch(VoiceMode mode, boolean askedByVoiceGuide) {
         if (Looper.myLooper() != Looper.getMainLooper()) {
-            mainHandler.post(() -> openVoiceModalWithoutCancellingSearch(mode));
+            mainHandler.post(() -> openVoiceModalWithoutCancellingSearch(mode, askedByVoiceGuide));
             return;
         }
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) return;
+        if (!hasPermission(Manifest.permission.RECORD_AUDIO)) {
+            onMicrophoneUnavailable(false);
+            return;
+        }
 
         this.voiceMode = mode;
         final long myTurn = ++voiceTurnToken;
         isProcessingResult = false;
-        if (voiceFeedback != null) voiceFeedback.stopAll();
+        // Silence speech for as long as the microphone window is open. The recognizer mutes
+        // or ducks playback, so anything started now would be cut off mid-sentence.
+        if (voiceFeedback != null) voiceFeedback.beginListeningHold();
         View modalView = LayoutInflater.from(this).inflate(R.layout.dialog_voice_modal, binding.getRoot(), false);
         String paneTitle = getString(mode == VoiceMode.CONFIRMATION
                 ? R.string.voice_confirmation_title : R.string.voice_search_title);
         ViewCompat.setAccessibilityPaneTitle(modalView, paneTitle);
         TextView tvVoiceInput = modalView.findViewById(R.id.tvVoiceInput);
+        activeVoiceInput = tvVoiceInput;
+        voiceRepromptCount = 0;
         View btnCancel = modalView.findViewById(R.id.btnVoiceCancel);
         bindVoiceWaveBars(modalView);
+        if (voiceModal != null && voiceModal.isShowing()) voiceModal.dismiss();
+        boolean hideFromTalkBack = askedByVoiceGuide && isTalkBackOn();
+        voiceModalHiddenFromTalkBack = hideFromTalkBack;
+        // TalkBack reads a window the user opened; a beep then would come before that
+        // reading, so it is played when the microphone is actually ready instead.
+        beepWhenMicReady = isTalkBackOn() && !hideFromTalkBack;
         voiceModal = new BottomSheetDialog(this);
-        voiceModal.setTitle(paneTitle);
+        if (!hideFromTalkBack) voiceModal.setTitle(paneTitle);
         voiceModal.setContentView(modalView);
-        voiceModal.setCancelable(false);
+        if (hideFromTalkBack) {
+            // Nothing in the sheet is read by TalkBack (its speech would be recorded and
+            // repeats the voice guide); Back takes the place of the hidden Cancel button.
+            ViewCompat.setAccessibilityPaneTitle(modalView, null);
+            voiceModal.getWindow().getDecorView().setImportantForAccessibility(
+                    View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+            voiceModal.setCancelable(true);
+            voiceModal.setCanceledOnTouchOutside(false);
+        } else {
+            voiceModal.setCancelable(false);
+        }
         voiceModal.show();
-        playSoundEffect(ToneGenerator.TONE_PROP_BEEP);
+        if (!beepWhenMicReady) playSoundEffect(ToneGenerator.TONE_PROP_BEEP);
         vibratePattern(60);
 
-        btnCancel.setOnClickListener(v -> {
+        Runnable cancelVoiceInput = () -> {
+            // Invalidate the turn so a result already in flight is not handled after Cancel.
+            voiceTurnToken++;
             stopListening();
             voiceModal.dismiss();
-        });
+            abandonPendingConfirmation(true);
+        };
+        btnCancel.setOnClickListener(v -> cancelVoiceInput.run());
+        voiceModal.setOnCancelListener(d -> cancelVoiceInput.run());
 
+        BottomSheetDialog thisModal = voiceModal;
         voiceModal.setOnDismissListener(d -> {
+            // A newer modal may already own the microphone and its listening hold.
+            if (voiceModal != thisModal) return;
             stopListening();
             voiceWaveBars = null;
+            activeVoiceInput = null;
+            if (voiceFeedback != null) voiceFeedback.endListeningHold();
         });
 
-        tvVoiceInput.setText(getMicPreparationText());
+        String preparation = getMicPreparationText(hideFromTalkBack);
+        tvVoiceInput.setText(preparation);
         mainHandler.postDelayed(() -> {
             if (voiceModal != null && voiceModal.isShowing() && myTurn == voiceTurnToken) {
                 startListening(tvVoiceInput, myTurn);
             }
-        }, getMicStartDelayMs());
+        }, getMicStartDelayMs(hideFromTalkBack, paneTitle + ". " + preparation));
     }
 
-    private long getMicStartDelayMs() {
-        return voiceFeedback != null && voiceFeedback.isTalkBackActive()
-                ? TALKBACK_MIC_START_DELAY_MS : MIC_START_DELAY_MS;
+    private long getMicStartDelayMs(boolean hiddenFromTalkBack, String talkBackReads) {
+        if (!isTalkBackOn()) return MIC_START_DELAY_MS;
+        // The voice guide asked the question and TalkBack reads nothing: only the beep remains.
+        if (hiddenFromTalkBack && !voiceFeedback.isScreenReaderMode()) {
+            return COMPANION_MIC_START_DELAY_MS;
+        }
+        // TalkBack reads the window's title and instruction; listening starts after that.
+        return talkBackReadingTimeMs(talkBackReads);
     }
 
-    private String getMicPreparationText() {
-        if (voiceFeedback != null && voiceFeedback.isTalkBackActive()) {
-            return voiceMode == VoiceMode.CONFIRMATION
-                    ? "Then say yes or no."
-                    : "Then say an object name.";
+    private String getMicPreparationText(boolean hiddenFromTalkBack) {
+        if (isTalkBackOn() && !hiddenFromTalkBack) {
+            // This is what TalkBack reads when the user opens voice search.
+            return listenInstruction(voiceMode == VoiceMode.CONFIRMATION
+                    ? "say yes or no." : "say an object name.");
         }
         return getString(R.string.voice_preparing);
     }
 
+    /** The target's name for speech; never "null" if the search ended meanwhile. */
+    private String targetNameForSpeech() {
+        String name = targetObject;
+        return name == null || name.trim().isEmpty() ? "object" : name;
+    }
+
+    private void startSearchQueuedForModel() {
+        String pending = pendingSearchAfterModelLoad;
+        pendingSearchAfterModelLoad = null;
+        if (pending == null || destroyed || isFinishing()) return;
+        // Reports the load failure, or starts the search now that the detector exists.
+        startSearchForObject(pending);
+    }
+
     private void cancelActiveSearch() {
+        pendingSearchAfterModelLoad = null;
         invalidateDetectionSession();
         voiceTurnToken++;
         stopSearchReminder();
@@ -2203,19 +2878,19 @@ public class FinderActivity extends BaseActivity {
         lastSpokenLabel = null;
         currentState = DetectionState.IDLE;
         runOnUiThread(() -> {
-            binding.tvStatusText.setText(getString(R.string.status_idle));
+            updateDetectionStatus(StatusState.READY, null);
             binding.scanningContainer.setVisibility(View.GONE);
             binding.detectedResultPanel.setVisibility(View.GONE);
             updateTargetLabel("");
             hideBoundingBox();
             applyTorchForState();
+            updateGuidanceAccessibilityMode();
         });
     }
 
     private void resetDetectionTracking() {
         stopSearchReminder();
         lastDetectionSeenTime = 0;
-        consecutiveMissedDetections = 0;
         lastMoveCloserTts = 0;
         lastNotYetVisibleTts = 0;
         lastSceneMotionAt = 0;
@@ -2223,9 +2898,12 @@ public class FinderActivity extends BaseActivity {
         lastLumaSamples = null;
         usedSearchGuidanceKeys.clear();
         searchStartedAt = 0;
+        trackingLostAt = 0;
         hasSpokenSearchTimeout = false;
         hasDetectedTargetInCurrentSearch = false;
+        hapticRadarProximity = 0f;
         hapticRadarWidthRatio = 0f;
+        hapticRadarDistance = -1f;
         lastHandSeenTime = SystemClock.elapsedRealtime();
         lastNoHandFallbackTts = 0;
         lastKnownTrackingBox = null;
@@ -2234,25 +2912,33 @@ public class FinderActivity extends BaseActivity {
         lastKnownTrackingConfidence = 0f;
         lastKnownTrackingProximity = 0f;
         lastKnownTrackingWidthRatio = 0f;
+        lastKnownTrackingDistance = -1f;
         lastKnownHandBox = null;
-        resetColorStability();
+        // Color history is reset on the camera thread when it sees the new session token.
         lastHandDetectionTime = 0;
         lastResultPanelUpdateTime = 0;
         lastOcrScanTime = 0;
         lastColorSampleTime = 0;
+        lastTargetMeteringAt = 0;
         lastOcrText = null;
         lastSpokenOcrText = null;
         announcedFoundColor = null;
         announcedFoundText = null;
         foundFeedbackStartedAt = 0;
         ocrInFlight = false;
-        lastHandOcclusionTts = 0;
         handContactStartedAt = 0;
         lastLiveHandContactAt = 0;
-        lastConfirmedHandOcclusionAt = 0;
+        lastHandAtTargetAt = 0;
         handGuidanceOwnsVibration = false;
         handGuidanceIntroductionSpoken = false;
+        handGuidanceLostAt = 0;
+        retrievalEngagedAt = 0;
+        lastDetectionMissAt = 0;
+        lastPlausibleContactAt = 0;
         lastHandGuidanceText = null;
+        lastHandGuidanceGap = -1f;
+        lastHandGuidanceHorizontal = null;
+        reachZoneCueGiven = false;
         reachInstructionSent = false;
         lastSpokenApproachBand = null;
         radarRetrievalStartedAt = 0;
@@ -2266,6 +2952,7 @@ public class FinderActivity extends BaseActivity {
         awaitingFindAnotherConfirmation = false;
         lastHoldingConfirmationPrompt = 0;
         holdingConfirmationAttempts = 0;
+        holdingAttemptsExhaustedNoticeGiven = false;
         handContactStartedAt = 0;
         lastLiveHandContactAt = 0;
         radarRetrievalStartedAt = 0;
@@ -2286,13 +2973,27 @@ public class FinderActivity extends BaseActivity {
         lastSpokenLabel = null;
         currentState = DetectionState.IDLE;
         runOnUiThread(() -> {
-            binding.tvStatusText.setText(getString(R.string.status_idle));
+            updateDetectionStatus(StatusState.READY, null);
             binding.scanningContainer.setVisibility(View.GONE);
             binding.detectedResultPanel.setVisibility(View.GONE);
             updateTargetLabel("");
             hideBoundingBox();
             applyTorchForState();
+            updateGuidanceAccessibilityMode();
         });
+    }
+
+    /**
+     * Ends a search for vibration / sound-effects-only users once the hand has held the
+     * object. The "done" signal plays after tracking stops, because stopping the radar
+     * cancels any vibration in progress.
+     */
+    private void finishSearchWithoutVoice() {
+        String finished = targetNameForSpeech();
+        completeLockedTracking();
+        vibratePattern(FINISH_VIBRATION_MS);
+        playSoundEffect(ToneGenerator.TONE_CDMA_CONFIRM, FINISH_TONE_MS);
+        runOnUiThread(() -> updateDetectionStatus(StatusState.DONE, finished));
     }
 
     private void bindVoiceWaveBars(View modalView) {
@@ -2333,19 +3034,26 @@ public class FinderActivity extends BaseActivity {
             awaitingHoldingConfirmation = false;
             if (isAffirmative(lower)) {
                 completeLockedTracking();
+                if (isTalkBackOn()) {
+                    // Finding is over, so the voice guide stops here; TalkBack says what's next.
+                    speakOutsideSearch("Great. When you're ready to find something else, "
+                            + "tap the microphone button.");
+                    return;
+                }
                 awaitingFindAnotherConfirmation = true;
-                speakThenListen("Awesome! Would you like to find something else?",
+                speakThenListen("Awesome! Would you like to find something else? "
+                                + listenInstruction("say yes or no."),
                         "find_another_confirmation_prompt", VoiceMode.CONFIRMATION);
                 return;
             }
             if (isNegative(lower)) {
                 lastHoldingConfirmationPrompt = SystemClock.elapsedRealtime();
-                speak("No worries, I'll keep tracking it for you.");
+                speak("Okay. I'll keep tracking the " + targetNameForSpeech() + " and guiding your hand.");
                 return;
             }
             awaitingHoldingConfirmation = true;
-            speakThenListen("I did not catch that. Is this the " + targetObject
-                            + " you are looking for?",
+            speakThenListen("Sorry, I didn't catch that. Is this the " + targetNameForSpeech()
+                            + " you are looking for? " + listenInstruction("say yes or no."),
                     "holding_confirmation_prompt", VoiceMode.CONFIRMATION);
             return;
         }
@@ -2353,37 +3061,60 @@ public class FinderActivity extends BaseActivity {
         if (awaitingFindAnotherConfirmation) {
             awaitingFindAnotherConfirmation = false;
             if (isAffirmative(lower)) {
-                speakThenListen("Awesome, what object would you like to find?",
+                speakThenListen("Great. What object would you like to find? "
+                                + listenInstruction("say the object name."),
                         "find_another_object_prompt", VoiceMode.OBJECT);
                 return;
             }
             if (isNegative(lower)) {
-                speak("Got it. Let me know whenever you're ready to search again.");
+                speak("Okay. When you're ready to search again, tap the microphone button "
+                        + "at the bottom of the screen.");
                 return;
             }
             awaitingFindAnotherConfirmation = true;
-            speakThenListen("Would you like to find something else?",
+            speakThenListen("Sorry, I didn't catch that. Would you like to find something else? "
+                            + listenInstruction("say yes or no."),
                     "find_another_confirmation_prompt", VoiceMode.CONFIRMATION);
+            return;
+        }
+
+        if (awaitingRepeatConfirmation && suggestedRepeatObject == null
+                && (isAffirmative(lower) || isNegative(lower))) {
+            awaitingRepeatConfirmation = false;
+            speakThenListen("What would you like to find? " + listenInstruction("say the object name."),
+                    "find_another_object_prompt", VoiceMode.OBJECT);
             return;
         }
 
         if (awaitingRepeatConfirmation) {
             awaitingRepeatConfirmation = false;
-            if ((lower.contains("yes") || lower.contains("yeah") || lower.contains("sure"))
-                    && suggestedRepeatObject != null) {
+            if (isAffirmative(lower) && suggestedRepeatObject != null) {
                 startSearchForObject(suggestedRepeatObject);
                 return;
             }
-            if (lower.contains("no") || lower.contains("not")) {
-                speak("No problem. What would you like to look for instead?");
-                mainHandler.postDelayed(() -> openVoiceModalWithoutCancellingSearch(VoiceMode.OBJECT), 900);
+            if (isNegative(lower)) {
+                // Say what happens next before the microphone reopens, so a first-time
+                // user knows it is now waiting for an object name.
+                speakThenListen("No problem. What would you like to find instead? "
+                                + listenInstruction("say the object name."),
+                        "find_another_object_prompt", VoiceMode.OBJECT);
                 return;
             }
+            if (ObjectCatalog.resolve(lower) == null && suggestedRepeatObject != null) {
+                // Neither yes, no, nor an object: ask again rather than search for a mishearing.
+                awaitingRepeatConfirmation = true;
+                speakThenListen("Sorry, I didn't catch that. Do you want to search for the "
+                                + suggestedRepeatObject + " again? "
+                                + listenInstruction("say yes or no."),
+                        "startup_prompt", VoiceMode.CONFIRMATION);
+                return;
+            }
+            // An object name answers the question too; fall through to search for it.
         }
 
         if (awaitingAnotherConfirmation) {
             awaitingAnotherConfirmation = false;
-            if (lower.contains("yes") || lower.contains("yeah")) {
+            if (isAffirmative(lower)) {
                 speak(getString(R.string.tts_ready));
                 return;
             } else {
@@ -2393,26 +3124,20 @@ public class FinderActivity extends BaseActivity {
             }
         }
 
-        if (lower.contains("settings")) {
+        if (containsWord(lower, "settings")) {
             startActivity(new Intent(this, SettingsActivity.class));
             return;
         }
 
-        String resolved = resolveAlias(lower);
-        String matched = null;
-        startSearchForObject(resolved);
+        startSearchForObject(lower);
     }
 
     private String chooseBestSpeechMatch(ArrayList<String> matches) {
         for (String candidate : matches) {
             String normalized = normalizeSpokenCommand(candidate);
-            if (normalized.contains("settings")) return normalized;
-            String resolved = resolveAlias(normalized);
-            for (String obj : ObjectCatalog.PREDEFINED_OBJECTS) {
-                if (resolved.equalsIgnoreCase(obj) || resolved.contains(obj)) {
-                    return resolved;
-                }
-            }
+            if (containsWord(normalized, "settings")) return normalized;
+            String resolved = ObjectCatalog.resolve(normalized);
+            if (resolved != null) return resolved;
         }
         return normalizeSpokenCommand(matches.get(0));
     }
@@ -2428,67 +3153,69 @@ public class FinderActivity extends BaseActivity {
     }
 
     private String normalizeSpokenCommand(String spoken) {
-        String lower = spoken == null ? "" : spoken.toLowerCase(Locale.US).trim();
-        return lower
-                .replace("please", "")
-                .replace("find my", "")
-                .replace("find the", "")
-                .replace("find a", "")
-                .replace("find", "")
-                .replace("look for my", "")
-                .replace("look for the", "")
-                .replace("look for", "")
-                .replace("search for my", "")
-                .replace("search for the", "")
-                .replace("search for", "")
-                .replace("where is my", "")
-                .replace("where is the", "")
-                .replaceAll("\\s+", " ")
-                .trim();
+        return VoiceCommands.normalize(spoken);
     }
 
     private boolean isAffirmative(String lower) {
-        return lower.contains("yes") || lower.contains("yeah") || lower.contains("yep")
-                || lower.contains("sure") || lower.contains("okay") || lower.contains("ok")
-                || lower.contains("i am") || lower.contains("got it") || lower.contains("holding");
+        return VoiceCommands.isAffirmative(lower);
     }
 
     private boolean isNegative(String lower) {
-        return lower.contains("no") || lower.contains("not") || lower.contains("nope")
-                || lower.contains("don't") || lower.contains("do not");
+        return VoiceCommands.isNegative(lower);
+    }
+
+    private boolean containsWord(String text, String word) {
+        return VoiceCommands.containsWord(text, word);
     }
 
     private void startSearchForObject(String spoken) {
         // PROCESS 3B - REQUEST VALIDATION: Resolve aliases, reject unsupported classes, or start target-only scanning.
         invalidateDetectionSession();
-        String lower = spoken == null ? "" : spoken.toLowerCase().trim();
-        if (isAffirmative(lower) || isNegative(lower)) {
+        String lower = spoken == null ? "" : spoken.toLowerCase(Locale.US).trim();
+        // Longest-phrase, whole-word resolution: "glasses case" -> class 15, not "glasses" (3).
+        String matched = ObjectCatalog.resolve(lower);
+        if (matched == null && (isAffirmative(lower) || isNegative(lower))) {
+            // A stray yes/no that names no object is not a new search request.
             return;
-        }
-
-        String resolved = resolveAlias(lower);
-        String matched = null;
-        for (String obj : ObjectCatalog.PREDEFINED_OBJECTS) {
-            if (resolved.equalsIgnoreCase(obj) || resolved.contains(obj)) { matched = obj; break; }
         }
         stopHapticRadar();
         resetDetectionTracking();
         resetTrackingLock();
         if (voiceFeedback != null) voiceFeedback.resetDedupState();
 
+        if (matched == null && lower.isEmpty()) {
+            setDetectionState(DetectionState.IDLE);
+            speakOutsideSearch("I didn't catch an object name. Tap the microphone button and say what to find.");
+            return;
+        }
+
         if (matched == null) {
             targetObject = spoken; targetTFLabel = null;
             setDetectionState(DetectionState.NOT_IN_CLASSES);
             vibratePattern(80, 80, 80, 80, 80);
-            speak(getString(R.string.tts_not_predefined, spoken));
+            speakOutsideSearch(getString(R.string.tts_not_predefined, spoken));
             return;
         }
 
         if (detector == null) {
             setDetectionState(DetectionState.IDLE);
-            speak(detectorLoadFailed
-                    ? "Detection is unavailable. Please restart the app and try again."
-                    : "The detection model is still preparing. Please try again in a moment.");
+            if (detectorLoadFailed) {
+                speakOutsideSearch("Detection is unavailable. Please restart the app and try again.");
+            } else {
+                pendingSearchAfterModelLoad = matched;
+                speakOutsideSearch("The detection model is still loading. I'll start looking for the "
+                        + matched + " as soon as it's ready.");
+            }
+            return;
+        }
+
+        if (!hasPermission(Manifest.permission.CAMERA)) {
+            setDetectionState(DetectionState.IDLE);
+            pendingSearchAfterCameraGrant = matched;
+            if (!blockedPermissions.contains(Manifest.permission.CAMERA)) {
+                speakOutsideSearch("VocaSee needs camera access to find the " + matched + ".");
+            }
+            requestOrExplainPermission(Manifest.permission.CAMERA, "Camera");
             return;
         }
 
@@ -2504,13 +3231,6 @@ public class FinderActivity extends BaseActivity {
         startCamera();
     }
 
-    private String resolveAlias(String spoken) {
-        for (String[] row : ALIASES) {
-            if (spoken.contains(row[0])) return row[1];
-        }
-        return spoken;
-    }
-
     private String toTFLiteLabel(String canonical) {
         return canonical;
     }
@@ -2521,8 +3241,7 @@ public class FinderActivity extends BaseActivity {
             switch (state) {
                 case IDLE:
                     stopHapticRadar();
-                    binding.tvStatusText.setText(getString(R.string.status_idle));
-                    binding.statusDot.setBackgroundResource(R.drawable.dot_white);
+                    updateDetectionStatus(StatusState.READY, null);
                     binding.scanningContainer.setVisibility(View.GONE);
                     updateTargetLabel("");
                     binding.detectedResultPanel.setVisibility(View.GONE);
@@ -2531,9 +3250,7 @@ public class FinderActivity extends BaseActivity {
                     break;
                 case SCANNING:
                     stopHapticRadar();
-                    binding.tvStatusText.setText(getString(R.string.status_scanning, targetObject));
-                    binding.tvScanningLabel.setText(getString(R.string.status_scanning, targetObject));
-                    binding.statusDot.setBackgroundResource(R.drawable.dot_blue_glow);
+                    updateDetectionStatus(StatusState.SCANNING, targetObject);
                     binding.scanningContainer.setVisibility(View.VISIBLE);
                     updateTargetLabel(getString(R.string.target_looking, targetObject));
                     binding.detectedResultPanel.setVisibility(View.GONE);
@@ -2541,14 +3258,14 @@ public class FinderActivity extends BaseActivity {
                     applyTorchForState();
                     break;
                 case FOUND:
-                    binding.statusDot.setBackgroundResource(R.drawable.dot_blue_glow);
+                    updateDetectionStatus(StatusState.DETECTED, targetObject);
                     binding.scanningContainer.setVisibility(View.GONE);
                     updateTargetLabel("");
                     applyTorchForState();
                     break;
                 case NOT_IN_CLASSES:
                     stopHapticRadar();
-                    binding.tvStatusText.setText(getString(R.string.status_not_in_classes, targetObject));
+                    updateDetectionStatus(StatusState.UNSUPPORTED, targetObject);
                     binding.scanningContainer.setVisibility(View.GONE);
                     updateTargetLabel(getString(R.string.target_not_found, targetObject));
                     binding.detectedResultPanel.setVisibility(View.GONE);
@@ -2556,7 +3273,43 @@ public class FinderActivity extends BaseActivity {
                     applyTorchForState();
                     break;
             }
+            updateGuidanceAccessibilityMode();
         });
+    }
+
+    /**
+     * While a search is running with TalkBack on, the controls are hidden from TalkBack:
+     * otherwise focus lands on (or is restored to) the microphone and TalkBack reads
+     * "Microphone, button, double tap to activate" over the live directions, and the
+     * per-frame status text is re-read whenever it changes. Only the live-region announcer
+     * stays reachable. Back stops the search and brings the controls back.
+     */
+    private void updateGuidanceAccessibilityMode() {
+        boolean guidanceActive = (currentState == DetectionState.SCANNING
+                || currentState == DetectionState.FOUND)
+                && voiceFeedback != null && voiceFeedback.isTalkBackActive();
+        if (guidanceActive == guidanceAccessibilityModeActive) return;
+        guidanceAccessibilityModeActive = guidanceActive;
+        stopGuidanceBackCallback.setEnabled(guidanceActive);
+
+        View[] passiveDuringGuidance = {
+                binding.finderQuickActions, binding.btnSettings, binding.tvStatusText,
+                binding.tvTargetLabel, binding.detectedResultPanel, binding.scanningContainer };
+        if (guidanceActive) {
+            // Drop focus first; a node that disappears while focused makes TalkBack jump
+            // to (and read) whatever is next.
+            View[] focusable = { binding.btnMic, binding.btnRecent, binding.btnObjects,
+                    binding.btnSettings, binding.tvStatusText, binding.tvTargetLabel };
+            for (View view : focusable) {
+                view.performAccessibilityAction(
+                        android.view.accessibility.AccessibilityNodeInfo.ACTION_CLEAR_ACCESSIBILITY_FOCUS,
+                        null);
+            }
+        }
+        int importance = guidanceActive
+                ? View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+                : View.IMPORTANT_FOR_ACCESSIBILITY_AUTO;
+        for (View view : passiveDuringGuidance) view.setImportantForAccessibility(importance);
     }
 
     private void showFinderTutorialStep(int index) {
@@ -2585,8 +3338,8 @@ public class FinderActivity extends BaseActivity {
                 break;
             case 1:
                 title = "Understand feedback";
-                body = "When the object is found, VocaSee shows a box, speaks its proximity, vibrates faster as you get closer, and can show hand proximity guidance.";
-                tts = "When the object is found, VocaSee shows a box, speaks its proximity, "
+                body = "When the object is found, the app shows a box, speaks its proximity, vibrates faster as you get closer, and can show hand proximity guidance.";
+                tts = "When the object is found, the app shows a box, speaks its proximity, "
                         + "vibrates faster as you get closer, and can show hand proximity guidance. "
                         + "Tap next to continue.";
                 highlightedView = binding.tutorialHighlightDetection;
@@ -2629,13 +3382,14 @@ public class FinderActivity extends BaseActivity {
         binding.btnTutorialNext.setContentDescription(index == 2
                 ? getString(R.string.cd_tutorial_done)
                 : getString(R.string.cd_tutorial_next));
-        // VoiceFeedbackManager routes the same message through TalkBack when it is
-        // active, so do not announce it twice from the tutorial card.
-        if (voiceFeedback == null || !voiceFeedback.isTalkBackActive()) {
-            binding.tutorialCard.announceForAccessibility(title + ". " + body);
-        }
         binding.btnTutorialNext.requestFocus();
-        speak(tts);
+        if (isTalkBackOn()) {
+            // The tutorial is part of opening the app: TalkBack reads the card, not the voice guide.
+            voiceFeedback.announceThroughTalkBack(title + ". " + body);
+        } else {
+            // The user tapped through; the previous step's explanation no longer applies.
+            speakUrgent(tts);
+        }
     }
 
     private void hideTutorialHighlights() {
@@ -2717,11 +3471,34 @@ public class FinderActivity extends BaseActivity {
     }
     private String capitalize(String s) { if(s==null||s.isEmpty()) return s; return s.substring(0,1).toUpperCase()+s.substring(1); }
     private void speak(String text) { speak(text, null); }
+    private void speakUrgent(String text) {
+        if (voiceFeedback != null) voiceFeedback.speakUrgent(text);
+    }
     private void speak(String text, String id) {
         if (voiceFeedback != null) voiceFeedback.speakCritical(text, id);
     }
 
+    /**
+     * With TalkBack on, VocaSee's voice guide speaks only while an object is being found;
+     * opening the app and the voice search are left to TalkBack, which read them as well
+     * and made everything play twice. Without TalkBack the voice guide does all of it.
+     */
+    private boolean isTalkBackOn() {
+        return voiceFeedback != null && voiceFeedback.isTalkBackActive();
+    }
+
+    /** A start-up or voice-search message: TalkBack reads it when on, otherwise the voice guide. */
+    private void speakOutsideSearch(String text) {
+        if (isTalkBackOn()) {
+            voiceFeedback.announceThroughTalkBack(text);
+        } else {
+            speak(text);
+        }
+    }
+
     private void startVoiceGuideWithTalkBackNotice() {
+        // With TalkBack on, TalkBack reads the opening screen; the voice guide waits for a search.
+        if (isTalkBackOn()) return;
         if (voiceFeedback == null
                 || !voiceFeedback.isTalkBackActive()
                 || voiceFeedback.isScreenReaderMode()
@@ -2733,8 +3510,8 @@ public class FinderActivity extends BaseActivity {
 
         talkBackVoiceGuideNoticeShown = true;
         new androidx.appcompat.app.AlertDialog.Builder(this)
-                .setTitle("VocaSee Voice Guide")
-                .setMessage("VocaSee provides live spoken detection guidance. For the clearest guidance during a search, turn off TalkBack. You can use TalkBack Compatibility in Settings when you want TalkBack to read key updates instead.")
+                .setTitle("Voice Guide")
+                .setMessage("This app provides live spoken detection guidance. For the clearest guidance during a search, turn off TalkBack. You can use TalkBack Compatibility in Settings when you want TalkBack to read key updates instead.")
                 .setNegativeButton("Continue with Voice Guide",
                         (dialog, which) -> scheduleStartupPrompt())
                 .setPositiveButton("Accessibility Settings", (dialog, which) ->
@@ -2743,12 +3520,20 @@ public class FinderActivity extends BaseActivity {
     }
 
     private void scheduleStartupPrompt() {
+        if (isTalkBackOn()) return;
         mainHandler.postDelayed(() -> {
             if (!isFinishing() && !isDestroyed()
-                    && !tutorialShowing && currentState == DetectionState.IDLE) {
-                speak(getStartupPrompt(), "startup_prompt");
+                    && !tutorialShowing && currentState == DetectionState.IDLE
+                    && voiceFeedback != null) {
+                voiceFeedback.speakCriticalThenListen(getStartupPrompt(), "startup_prompt");
             }
-        }, STARTUP_PROMPT_DELAY_MS);
+        }, getStartupPromptDelayMs());
+    }
+
+    /** TalkBack first reads the new screen; without it there is nothing to wait for. */
+    private long getStartupPromptDelayMs() {
+        return voiceFeedback != null && voiceFeedback.isTalkBackActive()
+                ? STARTUP_PROMPT_DELAY_MS : STARTUP_PROMPT_DELAY_NO_TALKBACK_MS;
     }
     private void speakQueued(String text) {
         speakQueued(text, null);
@@ -2763,7 +3548,8 @@ public class FinderActivity extends BaseActivity {
 
     private void speakThenListen(String text, String id, VoiceMode mode) {
         if (AppPreferences.isVoiceGuideEnabled(this)) {
-            speak(text, id);
+            // The utterance-done listener opens the microphone once this has been fully spoken.
+            if (voiceFeedback != null) voiceFeedback.speakCriticalThenListen(text, id);
         } else {
             mainHandler.postDelayed(() -> openVoiceModalWithoutCancellingSearch(mode), 250);
         }
@@ -2789,25 +3575,113 @@ public class FinderActivity extends BaseActivity {
         boolean hasColor = AppPreferences.isColorDescriptionEnabled(this)
                 && isStableColorForFeedback(color);
         boolean hasText = isReadableOcrText(recognizedText);
-        binding.tvDetectedSummary.setText(capitalize(label) + " found\n"
-                + "Color: " + (hasColor ? formatColorDescription(color) : "undetermined") + "\n"
-                + "Visible text: " + (hasText ? recognizedText : "none") + "\n"
-                + "Proximity: " + capitalize(framePosition) + " - " + percent + "% confidence");
+        binding.tvDetectedName.setText(capitalize(label));
+        binding.tvDetectedColor.setText(getString(R.string.result_color,
+                hasColor ? capitalize(formatColorDescription(color)) : "Undetermined"));
+        binding.tvDetectedText.setText(getString(R.string.result_text,
+                hasText ? recognizedText : "None"));
+        binding.tvDetectedConfidence.setText(getString(R.string.result_confidence, percent));
+        binding.tvDetectedProximity.setText(getString(R.string.result_proximity,
+                proximityWord(framePosition)));
         binding.detectedResultPanel.setVisibility(View.VISIBLE);
     }
 
+    /** The card's short distance word for a getFramePositionLabel band. */
+    private String proximityWord(String framePosition) {
+        if ("very close".equals(framePosition)) return "Near";
+        if ("getting close".equals(framePosition)) return "Medium";
+        return "Far";
+    }
+
+    /** Found-state details are on the result card; the status bar only names the object. */
     private void updateFoundStatus(String label, String color, String recognizedText) {
-        boolean includeColor = AppPreferences.isColorDescriptionEnabled(this)
-                && isStableColorForFeedback(color);
-        boolean includeText = isReadableOcrText(recognizedText);
-        binding.tvStatusText.setText("Object found. Color: "
-                + (includeColor ? formatColorDescription(color) : "undetermined")
-                + ". Visible text: " + (includeText ? recognizedText : "none") + ".");
+        updateDetectionStatus(StatusState.DETECTED, label);
+    }
+
+    private enum StatusState { READY, SCANNING, DETECTED, NOT_FOUND, UNSUPPORTED, DONE }
+
+    /**
+     * Sets the status bar's dot colour and text. The bar is hidden from TalkBack (it would be
+     * re-read on every update), so a real state change is announced instead, once. With the
+     * voice guide on it already says each of these ("Looking for…", "Found the…"), so the
+     * announcement is made only when the voice guide is off.
+     */
+    private void updateDetectionStatus(StatusState state, String objectName) {
+        String name = objectName == null || objectName.trim().isEmpty()
+                ? "object" : objectName.trim();
+        String text;
+        int dotColor;
+        switch (state) {
+            case SCANNING:
+                text = getString(R.string.status_scanning, name);
+                dotColor = R.color.status_scanning;
+                break;
+            case DETECTED:
+                text = getString(R.string.status_detected, capitalize(name));
+                dotColor = R.color.status_detected;
+                break;
+            case NOT_FOUND:
+                text = getString(R.string.status_no_object_found, name);
+                dotColor = R.color.status_not_found;
+                break;
+            case UNSUPPORTED:
+                text = getString(R.string.status_unsupported);
+                dotColor = R.color.status_not_found;
+                break;
+            case DONE:
+                text = getString(R.string.status_done, capitalize(name));
+                dotColor = R.color.status_detected;
+                break;
+            default:
+                text = getString(R.string.status_ready);
+                dotColor = R.color.status_ready;
+                break;
+        }
+        binding.tvStatusText.setText(text);
+        binding.imgStatusDot.setImageTintList(
+                android.content.res.ColorStateList.valueOf(getColor(dotColor)));
+
+        boolean changed = state != lastStatusState || !name.equals(lastStatusObject);
+        lastStatusState = state;
+        lastStatusObject = name;
+        if (changed && state != StatusState.READY && isTalkBackOn()
+                && !AppPreferences.isVoiceGuideEnabled(this)) {
+            voiceFeedback.announceThroughTalkBack(text);
+        }
+    }
+
+    /**
+     * With TalkBack on there is no spoken start-up prompt, so TalkBack gets one short entry
+     * announcement per screen launch. It waits a moment so TalkBack's own reading of the new
+     * window does not cut it off, and is skipped when the tutorial or a search comes first.
+     */
+    private void announceFinderReadyOnce() {
+        if (readyAnnouncementMade || !isTalkBackOn() || !AppPreferences.isTutorialDone(this)
+                || hasTargetObjectExtra(getIntent())) {
+            return;
+        }
+        readyAnnouncementMade = true;
+        mainHandler.postDelayed(() -> {
+            if (currentState == DetectionState.IDLE && !tutorialShowing
+                    && (voiceModal == null || !voiceModal.isShowing())) {
+                voiceFeedback.announceThroughTalkBack(getString(R.string.finder_ready_announcement));
+            }
+        }, READY_ANNOUNCEMENT_DELAY_MS);
+    }
+
+    /** Status bar text for a message that is not a detection state (permissions, errors). */
+    private void showStatusMessage(String message) {
+        binding.tvStatusText.setText(message);
+        binding.imgStatusDot.setImageTintList(
+                android.content.res.ColorStateList.valueOf(getColor(R.color.status_not_found)));
+        lastStatusState = null;
     }
 
     private void announceFoundDetailsIfNeeded(String label, String color, String recognizedText) {
+        // During the reach, color/text details would talk over hand guidance.
         if (currentState != DetectionState.FOUND || voiceFeedback == null
-                || awaitingHoldingConfirmation || awaitingFindAnotherConfirmation) {
+                || awaitingHoldingConfirmation || awaitingFindAnotherConfirmation
+                || retrievalEngagedAt > 0) {
             return;
         }
 
@@ -2866,8 +3740,9 @@ public class FinderActivity extends BaseActivity {
         return "still far";
     }
 
-    private String getLastKnownViewDescription(Rect box) {
-        if (box == null) return "in the previous camera view";
+    /** Which way to turn the phone to bring a lost object back, as one short sentence. */
+    private String getReturnDirection(Rect box) {
+        if (box == null) return "Hold the phone still for a moment.";
 
         int frameWidth = binding.cameraPreview.getWidth();
         int frameHeight = binding.cameraPreview.getHeight();
@@ -2876,47 +3751,75 @@ public class FinderActivity extends BaseActivity {
 
         float x = box.exactCenterX() / Math.max(1f, frameWidth);
         float y = box.exactCenterY() / Math.max(1f, frameHeight);
-        String horizontal = x < 0.34f ? "left" : (x > 0.66f ? "right" : "center");
-        String vertical = y < 0.34f ? "upper" : (y > 0.66f ? "lower" : "middle");
-
-        if ("center".equals(horizontal) && "middle".equals(vertical)) {
-            return "near the center of the camera view";
-        }
-        if ("center".equals(horizontal)) return "in the " + vertical + " part of the camera view";
-        if ("middle".equals(vertical)) return "on the " + horizontal + " side of the camera view";
-        return "in the " + vertical + " " + horizontal + " part of the camera view";
+        if (x < 0.34f) return "Turn the phone slowly left.";
+        if (x > 0.66f) return "Turn the phone slowly right.";
+        if (y < 0.34f) return "Tilt the phone slowly up.";
+        if (y > 0.66f) return "Tilt the phone slowly down.";
+        return "Hold the phone still for a moment.";
     }
 
     private void announceProximityBand(Rect box) {
-        if (voiceFeedback == null || handGuidanceOwnsVibration
+        // A partly occluded object shrinks its box and would otherwise "regress" the band
+        // during the reach, replaying approach prompts the user is already past.
+        if (voiceFeedback == null || handGuidanceOwnsVibration || retrievalEngagedAt > 0
                 || awaitingHoldingConfirmation || awaitingFindAnotherConfirmation) {
             return;
         }
-        String band = getFramePositionLabel(box);
-        boolean tooClose = hapticRadarProximity >= RADAR_TOO_CLOSE_AREA
-                || hapticRadarWidthRatio >= RADAR_TOO_CLOSE_WIDTH;
-        if (tooClose) band = "too close";
-        if (band.equals(lastSpokenApproachBand)) return;
+        // Bands use the same uncropped-frame proximity as the radar and the reach prompt.
+        String band = getApproachBand(hapticRadarProximity, hapticRadarWidthRatio,
+                lastSpokenApproachBand);
+        // "Still far" has its own directional prompt (maybePromptMoveCloser); the text
+        // below would wrongly tell a user who is moving away that the object is closer.
+        if ("still far".equals(band) || band.equals(lastSpokenApproachBand)) return;
         lastSpokenApproachBand = band;
         String guidance = "too close".equals(band)
-                ? "The object is very close. Take a small step back until you can see the whole object and its surface."
+                ? "Too close. Move the phone back a little."
                 : "very close".equals(band)
-                ? "The object is close. Hold the phone steady and reach slowly toward it."
-                : "The object is getting closer. Keep it in view and move slowly toward its surface.";
+                && isWithinDistance(hapticRadarDistance, REACH_PROMPT_MAX_DISTANCE_M)
+                ? "The " + targetNameForSpeech() + " is close. Keep the phone steady and reach forward slowly."
+                : "very close".equals(band)
+                // A large object fills the view before it is within arm's reach.
+                ? "Not in reach yet. Keep moving slowly toward it."
+                : "Getting closer. Keep moving slowly.";
         voiceFeedback.speakNormal(guidance, "approach_progress");
     }
 
-    private boolean isCloseEnoughForHandGuidance() {
-        return hapticRadarProximity >= HAND_GUIDANCE_ACTIVATION_PROXIMITY
-                || hapticRadarWidthRatio >= HAND_GUIDANCE_ACTIVATION_WIDTH_RATIO;
+    /**
+     * Entering a closer band needs the full threshold; falling back needs the ratio to drop
+     * APPROACH_BAND_HYSTERESIS below it, so a box flickering at a boundary stays in one band.
+     */
+    private String getApproachBand(float proximity, float widthRatio, String previousBand) {
+        int previousRank = approachBandRank(previousBand);
+        float tooCloseFactor = previousRank >= 3 ? 0.9f : 1f;
+        if (proximity >= RADAR_TOO_CLOSE_AREA * tooCloseFactor
+                || widthRatio >= RADAR_TOO_CLOSE_WIDTH * tooCloseFactor) {
+            return "too close";
+        }
+        float veryClose = RADAR_REACHED_PROXIMITY
+                * (previousRank >= 2 ? APPROACH_BAND_HYSTERESIS : 1f);
+        float gettingClose = RADAR_MOVE_CLOSER_AREA
+                * (previousRank >= 1 ? APPROACH_BAND_HYSTERESIS : 1f);
+        if (proximity >= veryClose) return "very close";
+        if (proximity >= gettingClose) return "getting close";
+        return "still far";
     }
 
-    private boolean isCloseEnoughForHandGuidance(float proximity, float widthRatio) {
+    private int approachBandRank(String band) {
+        if ("too close".equals(band)) return 3;
+        if ("very close".equals(band)) return 2;
+        if ("getting close".equals(band)) return 1;
+        return 0;
+    }
+
+    private boolean isCloseEnoughForHandGuidance(float proximity, float widthRatio,
+                                                 float distanceMeters) {
         boolean closeEnough = proximity >= HAND_GUIDANCE_ACTIVATION_PROXIMITY
                 || widthRatio >= HAND_GUIDANCE_ACTIVATION_WIDTH_RATIO;
         boolean tooClose = proximity >= RADAR_TOO_CLOSE_AREA
                 || widthRatio >= RADAR_TOO_CLOSE_WIDTH;
-        return closeEnough && !tooClose;
+        // A large object (backpack, towel, cane) passes the size tests from meters away.
+        return closeEnough && !tooClose
+                && isWithinDistance(distanceMeters, HAND_GUIDANCE_MAX_DISTANCE_M);
     }
 
     private float estimateProximityRatio(Rect box) {
@@ -2942,7 +3845,7 @@ public class FinderActivity extends BaseActivity {
         awaitingRepeatConfirmation = false;
         suggestedRepeatObject = null;
         if (!AppPreferences.isRecentReminderEnabled(this)) {
-            return getString(R.string.tts_ready);
+            return buildReadyPrompt();
         }
 
         List<String> frequent = AppPreferences.getFrequentSearches(this);
@@ -2957,25 +3860,33 @@ public class FinderActivity extends BaseActivity {
             awaitingRepeatConfirmation = true;
             return buildDynamicRecentPrompt(suggestedRepeatObject);
         }
-        return getString(R.string.tts_ready);
+        return buildReadyPrompt();
     }
 
+    private String buildReadyPrompt() {
+        return "Welcome. What object do you want to find? "
+                + listenInstruction("say one object name, such as charger or medicine.");
+    }
+
+    // Every variant ends with the answer it expects; the microphone opens right after it.
     private String buildDynamicRecentPrompt(String objectName) {
         String[] templates = {
-                "Welcome back. You recently looked for %s. Would you like to find it again?",
-                "Good to see you again. Should I help you find %s again?",
-                "You recently searched for %s. Say yes to find it again, or say another object."
+                "Welcome back. You recently searched for the %s. Do you want to search for it again?",
+                "Good to see you again. Should I help you find the %s again?",
+                "You recently searched for the %s. Do you want to find it again?"
         };
-        return String.format(Locale.US, templates[promptRandom.nextInt(templates.length)], objectName);
+        return String.format(Locale.US, templates[promptRandom.nextInt(templates.length)], objectName)
+                + " " + listenInstruction("say yes or no.");
     }
 
     private String buildDynamicFrequentPrompt(String objectName) {
         String[] templates = {
-                "Welcome back. Your most searched item is %s. Do you want to find it again?",
-                "You often look for %s. Should I search for it now?",
-                "I can help you find %s again. Say yes, or say a different object."
+                "Welcome back. Your most searched item is the %s. Do you want to find it again?",
+                "You often look for the %s. Should I search for it now?",
+                "I can help you find the %s again. Do you want to search for it?"
         };
-        return String.format(Locale.US, templates[promptRandom.nextInt(templates.length)], objectName);
+        return String.format(Locale.US, templates[promptRandom.nextInt(templates.length)], objectName)
+                + " " + listenInstruction("say yes or no.");
     }
 
     private void initializeVibrator() {
@@ -3003,12 +3914,13 @@ public class FinderActivity extends BaseActivity {
     }
 
     private void updateHapticRadar(Rect screenBox, boolean isLiveDetection,
-                                   float sourceProximity, float sourceWidthRatio) {
+                                   float sourceProximity, float sourceWidthRatio,
+                                   float sourceDistance) {
         // PROCESS 8D - HAPTIC STATE: Convert box size and center alignment into radar proximity/alignment values.
-        if (!AppPreferences.isVibrationEnabled(this) || vibrator == null || !vibrator.hasVibrator()) {
-            stopHapticRadar();
-            return;
-        }
+        // The proximity values also drive the spoken approach and reach prompts, so they are
+        // updated even when vibration is off; only the pulsing itself is skipped then.
+        boolean canVibrate = AppPreferences.isVibrationEnabled(this)
+                && vibrator != null && vibrator.hasVibrator();
 
         int frameWidth = binding.cameraPreview.getWidth();
         int frameHeight = binding.cameraPreview.getHeight();
@@ -3017,6 +3929,7 @@ public class FinderActivity extends BaseActivity {
 
         hapticRadarProximity = clamp01(sourceProximity);
         hapticRadarWidthRatio = clamp01(sourceWidthRatio);
+        hapticRadarDistance = sourceDistance;
 
         float normalizedCenterX = screenBox.exactCenterX() / Math.max(1f, frameWidth);
         float normalizedCenterY = screenBox.exactCenterY() / Math.max(1f, frameHeight);
@@ -3041,18 +3954,33 @@ public class FinderActivity extends BaseActivity {
             radarRetrievalStartedAt = 0;
         }
 
-        if (!hapticRadarActive && !handGuidanceOwnsVibration) {
+        // Each radar starts and stops on its own setting only.
+        if (!canVibrate) {
+            stopVibrationRadar();
+        } else if (!hapticRadarActive && !handGuidanceOwnsVibration) {
             hapticRadarActive = true;
             hapticRadarHandler.removeCallbacks(hapticRadarRunnable);
             hapticRadarHandler.post(hapticRadarRunnable);
+        }
+        if (!AppPreferences.isSoundEffectsEnabled(this)) {
+            stopSoundRadar();
+        } else if (!soundRadarActive && !handGuidanceOwnsVibration) {
+            soundRadarActive = true;
+            soundRadarHandler.removeCallbacks(soundRadarRunnable);
+            soundRadarHandler.post(soundRadarRunnable);
         }
     }
 
     private void maybePromptMoveCloser() {
         long now = SystemClock.elapsedRealtime();
-        if (hapticRadarProximity >= RADAR_MOVE_CLOSER_AREA
+        // After a closer band was announced, the object must fall clearly back before
+        // "move closer" is spoken, so boundary jitter does not alternate the two prompts.
+        float farThreshold = approachBandRank(lastSpokenApproachBand) >= 1
+                ? RADAR_MOVE_CLOSER_AREA * APPROACH_BAND_HYSTERESIS : RADAR_MOVE_CLOSER_AREA;
+        if (hapticRadarProximity >= farThreshold
                 || now - lastMoveCloserTts < MOVE_CLOSER_TTS_INTERVAL_MS
                 || "still far".equals(lastSpokenApproachBand)
+                || retrievalEngagedAt > 0
                 || awaitingHoldingConfirmation
                 || awaitingFindAnotherConfirmation) {
             return;
@@ -3065,48 +3993,52 @@ public class FinderActivity extends BaseActivity {
     private boolean hasReachedObjectProximity() {
         if (hapticRadarProximity >= RADAR_TOO_CLOSE_AREA
                 || hapticRadarWidthRatio >= RADAR_TOO_CLOSE_WIDTH) return false;
-        boolean areaReached = hapticRadarProximity >= RADAR_REACHED_PROXIMITY
-                || (hapticRadarCentered && hapticRadarProximity >= RADAR_REACHED_PROXIMITY * 0.72f);
-        boolean widthReached = hapticRadarWidthRatio >= RADAR_FULL_WIDTH_RATIO;
+        // The reach prompt engages hand guidance, so a large object must also be within reach.
+        if (!isWithinDistance(hapticRadarDistance, REACH_PROMPT_MAX_DISTANCE_M)) return false;
+        boolean areaReached = hapticRadarProximity >= RADAR_REACH_PROMPT_PROXIMITY
+                || (hapticRadarCentered && hapticRadarProximity >= RADAR_REACH_PROMPT_PROXIMITY * 0.72f);
+        boolean widthReached = hapticRadarWidthRatio >= RADAR_REACH_PROMPT_WIDTH;
         return areaReached || widthReached;
     }
 
     private void promptReachForObject() {
-        if (targetObject == null || reachInstructionSent
+        if (targetObject == null || reachInstructionSent || retrievalEngagedAt > 0
                 || awaitingHoldingConfirmation || awaitingFindAnotherConfirmation) return;
         long now = SystemClock.elapsedRealtime();
         if (now - lastReachInstructionAt < REACH_INSTRUCTION_REPEAT_MS) return;
         lastReachInstructionAt = now;
         reachInstructionSent = true;
-        speakQueued("The " + targetObject + " is close. Keep the phone steady, then reach slowly "
-                + "toward the object. I will guide your hand.", "reach_instruction");
+        // Engage before queuing so a pending "move closer" is cut off, not this instruction.
+        engageRetrieval();
+        speakQueued("The " + targetNameForSpeech() + " is close. Keep the phone steady and reach forward slowly.",
+                "reach_instruction");
     }
 
     private String buildApproachDirection(Rect box) {
-        if (box == null) return "Move slowly toward the nearby surface while keeping the camera steady.";
+        if (box == null) return "Move slowly forward.";
         int frameWidth = binding.cameraPreview.getWidth();
         int frameHeight = binding.cameraPreview.getHeight();
         if (frameWidth <= 0) frameWidth = getResources().getDisplayMetrics().widthPixels;
         if (frameHeight <= 0) frameHeight = getResources().getDisplayMetrics().heightPixels;
         float x = box.exactCenterX() / Math.max(1f, frameWidth);
         float y = box.exactCenterY() / Math.max(1f, frameHeight);
-        if (x < 0.35f) return "The object is to your left. Turn the camera left toward it, then move closer slowly.";
-        if (x > 0.65f) return "The object is to your right. Turn the camera right toward it, then move closer slowly.";
-        if (y < 0.34f) return "The object is above center. Tilt the camera up toward it, then move closer slowly.";
-        if (y > 0.66f) return "The object is below center. Tilt the camera down toward it, then move closer slowly.";
-        return "The object is ahead. Move slowly toward its surface, keeping it near the center of the camera.";
+        if (x < 0.35f) return "It's to your left. Turn the phone left, then move closer.";
+        if (x > 0.65f) return "It's to your right. Turn the phone right, then move closer.";
+        if (y < 0.34f) return "It's higher up. Tilt the phone up, then move closer.";
+        if (y > 0.66f) return "It's lower down. Tilt the phone down, then move closer.";
+        return "It's straight ahead. Move slowly toward it.";
     }
 
     private void promptHoldingConfirmation() {
         // This question is reached only through stable hand-to-object contact, not radar.
         if (awaitingHoldingConfirmation || awaitingFindAnotherConfirmation) return;
-        if (!HAND_RETRIEVAL_CONFIRMATION_ENABLED) return;
+        if (!isHoldingConfirmationEnabled()) return;
         hasAskedHoldingConfirmation = true;
         awaitingHoldingConfirmation = true;
         lastHoldingConfirmationPrompt = SystemClock.elapsedRealtime();
         holdingConfirmationAttempts++;
-        String prompt = "Your hand is at the " + targetObject + ". Is this the "
-                + targetObject + " you are looking for?";
+        String prompt = "Your hand is at the " + targetNameForSpeech() + ". Is this the one you are "
+                + "looking for? " + listenInstruction("say yes or no.");
         // A live contact cue should not wait behind a long detection description or
         // hand introduction; otherwise the hand can cover the object first.
         speakThenListen(prompt,
@@ -3118,13 +4050,11 @@ public class FinderActivity extends BaseActivity {
         // PROCESS 8E - DYNAMIC VIBRATION: Closer boxes pulse faster/stronger; centered boxes use maximum amplitude.
         if (!hapticRadarActive || !AppPreferences.isVibrationEnabled(this)
                 || vibrator == null || !vibrator.hasVibrator()) {
-            stopHapticRadar();
+            stopVibrationRadar();
             return;
         }
 
-        long interval = Math.round(RADAR_FAR_INTERVAL_MS
-                - (hapticRadarProximity * (RADAR_FAR_INTERVAL_MS - RADAR_CLOSE_INTERVAL_MS)));
-        interval = Math.max(RADAR_CLOSE_INTERVAL_MS, Math.min(RADAR_FAR_INTERVAL_MS, interval));
+        long interval = radarIntervalMs();
 
         int amplitude = hapticRadarCentered
                 ? RADAR_CENTER_AMPLITUDE
@@ -3143,10 +4073,49 @@ public class FinderActivity extends BaseActivity {
         hapticRadarHandler.postDelayed(hapticRadarRunnable, interval);
     }
 
+    /** Closer boxes repeat faster; shared by the vibration and sound radars. */
+    private long radarIntervalMs() {
+        long interval = Math.round(RADAR_FAR_INTERVAL_MS
+                - (hapticRadarProximity * (RADAR_FAR_INTERVAL_MS - RADAR_CLOSE_INTERVAL_MS)));
+        return Math.max(RADAR_CLOSE_INTERVAL_MS, Math.min(RADAR_FAR_INTERVAL_MS, interval));
+    }
+
+    private void tickSoundRadar() {
+        // PROCESS 8G - SOUND RADAR: Ticks speed up as the object gets closer, like the vibration radar.
+        if (!soundRadarActive || !AppPreferences.isSoundEffectsEnabled(this)) {
+            stopSoundRadar();
+            return;
+        }
+        long interval = radarIntervalMs();
+        // The recognizer would hear the ticks, and the listening beep and found tone
+        // must stay clearly audible, so those moments skip a tick instead of overlapping.
+        boolean micOpen = voiceModal != null && voiceModal.isShowing();
+        boolean soundEffectPlaying =
+                SystemClock.elapsedRealtime() - lastSoundEffectAt < SOUND_EFFECT_CLEAR_MS;
+        if (!micOpen && !soundEffectPlaying && radarToneGenerator != null) {
+            radarToneGenerator.startTone(
+                    hapticRadarCentered ? SOUND_RADAR_CENTER_TONE : SOUND_RADAR_TONE,
+                    (int) Math.min(SOUND_RADAR_MAX_TICK_MS, interval / 2));
+        }
+        soundRadarHandler.postDelayed(soundRadarRunnable, interval);
+    }
+
+    /** Stops both radars: the target was lost, the search ended, or hand guidance took over. */
     private void stopHapticRadar() {
+        stopVibrationRadar();
+        stopSoundRadar();
+    }
+
+    private void stopVibrationRadar() {
         hapticRadarActive = false;
         hapticRadarHandler.removeCallbacks(hapticRadarRunnable);
         if (vibrator != null) vibrator.cancel();
+    }
+
+    private void stopSoundRadar() {
+        soundRadarActive = false;
+        soundRadarHandler.removeCallbacks(soundRadarRunnable);
+        if (radarToneGenerator != null) radarToneGenerator.stopTone();
     }
 
     private float clamp01(float value) {
@@ -3154,16 +4123,33 @@ public class FinderActivity extends BaseActivity {
     }
 
     private void playSoundEffect(int tone) {
+        playSoundEffect(tone, 180);
+    }
+
+    private void playSoundEffect(int tone, int durationMs) {
         // PROCESS 8F - AUDITORY CUE: Emit short listening/detection tones when sound effects are enabled.
         if (AppPreferences.isSoundEffectsEnabled(this) && toneGenerator != null) {
-            toneGenerator.startTone(tone, 180);
+            lastSoundEffectAt = SystemClock.elapsedRealtime();
+            toneGenerator.startTone(tone, durationMs);
         }
     }
 
     private void refreshToneGenerator() {
         if (toneGenerator != null) toneGenerator.release();
-        toneGenerator = new ToneGenerator(
-                AudioManager.STREAM_NOTIFICATION, AppPreferences.getVolumePercent(this));
+        if (radarToneGenerator != null) radarToneGenerator.release();
+        toneGenerator = createToneGenerator();
+        radarToneGenerator = createToneGenerator();
+    }
+
+    private ToneGenerator createToneGenerator() {
+        try {
+            return new ToneGenerator(
+                    AudioManager.STREAM_NOTIFICATION, AppPreferences.getVolumePercent(this));
+        } catch (RuntimeException e) {
+            // Thrown when the audio system has no free tone resources; beeps are optional.
+            Log.w(TAG, "Tone generator unavailable", e);
+            return null;
+        }
     }
 
     private void applyTorchForState() {
@@ -3183,9 +4169,19 @@ public class FinderActivity extends BaseActivity {
             return;
         }
         if (voiceFeedback != null) voiceFeedback.refreshSpeechRate();
+        updateGuidanceAccessibilityMode();
+        announceFinderReadyOnce();
         refreshToneGenerator();
         if (detector != null) {
             detector.setConfidenceThreshold(AppPreferences.getConfidenceThreshold(this));
+        }
+        // Access may have been granted from the app settings page while we were paused.
+        if (camera == null && !cameraStartInFlight && hasPermission(Manifest.permission.CAMERA)) {
+            startCamera();
+        }
+        // onPause cleared mainHandler, which held the pending search reminder.
+        if (currentState == DetectionState.SCANNING && targetObject != null && searchStartedAt > 0) {
+            startSearchReminder();
         }
         applyTorchForState();
     }
@@ -3196,7 +4192,9 @@ public class FinderActivity extends BaseActivity {
         mainHandler.removeCallbacksAndMessages(null);
         stopListening();
         if (voiceModal != null && voiceModal.isShowing()) {
+            voiceTurnToken++;
             voiceModal.dismiss();
+            abandonPendingConfirmation(false);
         }
         mainHandler.removeCallbacksAndMessages(null);
         if (camera != null && camera.getCameraInfo().hasFlashUnit()) {
@@ -3207,15 +4205,43 @@ public class FinderActivity extends BaseActivity {
 
     @Override
     protected void onDestroy() {
+        destroyed = true;
         stopHapticRadar();
         if (voiceFeedback != null) voiceFeedback.shutdown();
         stopListening();
-        if (detector != null) detector.close();
-        if (onDeviceTextRecognizer != null) onDeviceTextRecognizer.close();
-        if (handLandmarker != null) handLandmarker.close();
-        if (cameraExecutor != null) cameraExecutor.shutdown();
-        if (handExecutor != null) handExecutor.shutdown();
+        // Release models on the threads that use them, after any work already queued there:
+        // closing the hand landmarker from the main thread while handExecutor was inside
+        // detectForVideo was a native use-after-free. The camera executor is FIFO, so this
+        // also runs after an in-progress model load and closes what it created.
+        if (cameraExecutor != null) {
+            cameraExecutor.execute(this::releaseAnalysisResources);
+            cameraExecutor.shutdown();
+        } else if (handExecutor != null) {
+            handExecutor.shutdown();
+        }
         if (toneGenerator != null) toneGenerator.release();
+        if (radarToneGenerator != null) radarToneGenerator.release();
         super.onDestroy();
+    }
+
+    /** Camera thread. Runs once, after the last analyzer frame and any pending model load. */
+    private void releaseAnalysisResources() {
+        TFLiteDetector closingDetector = detector;
+        detector = null;
+        if (closingDetector != null) closingDetector.close();
+        if (onDeviceTextRecognizer != null) {
+            onDeviceTextRecognizer.close();
+            onDeviceTextRecognizer = null;
+        }
+        // The camera thread is the only producer of hand tasks, so after this no new
+        // ones are queued; the close runs after any hand inference already in flight.
+        HandLandmarker closingLandmarker = handLandmarker;
+        handLandmarker = null;
+        if (handExecutor != null) {
+            if (closingLandmarker != null) handExecutor.execute(closingLandmarker::close);
+            handExecutor.shutdown();
+        } else if (closingLandmarker != null) {
+            closingLandmarker.close();
+        }
     }
 }

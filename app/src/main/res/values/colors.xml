@@ -24,4 +24,12 @@
         <color name="light_surface_variant">#EEF2F7</color>
         <color name="light_outline">#D0D8E5</color>
         <color name="finder_mic">#1D4ED8</color>
+    <!-- Finder status bar dot and result card (same in light and dark: they sit on the camera view). -->
+    <color name="status_ready">#9E9E9E</color>
+    <color name="status_scanning">#FFCC00</color>
+    <color name="status_detected">#2196F3</color>
+    <color name="status_not_found">#F44336</color>
+    <color name="result_card_bg">#801E1E1E</color>
+    <color name="result_card_stroke">#33FFFFFF</color>
+    <color name="result_card_detail">#E0E0E0</color>
 </resources>

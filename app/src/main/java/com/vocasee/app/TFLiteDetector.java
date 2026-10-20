@@ -74,8 +74,11 @@ public class TFLiteDetector {
     public TFLiteDetector(Context context, String modelFileName) throws IOException {
         Interpreter.Options options = new Interpreter.Options();
         // The hand model runs alongside YOLO during retrieval. Reserving all cores for
-        // one inference can starve the live preview and make the box appear frozen.
-        options.setNumThreads(2);
+        // one inference can starve the live preview and make the box appear frozen, so use
+        // at most half the cores. At two threads the model ran at only about 2.5 fps, too few
+        // frames for a stable box; up to four cuts that latency on typical 8-core phones.
+        int cores = Runtime.getRuntime().availableProcessors();
+        options.setNumThreads(Math.max(2, Math.min(4, cores / 2)));
         interpreter = new Interpreter(loadModelFile(context, modelFileName), options);
 
         Tensor inputTensor = interpreter.getInputTensor(0);
@@ -175,64 +178,22 @@ public class TFLiteDetector {
                     return detections;
                 }
 
-                if (outputFormat == OutputFormat.NMS_DETECTIONS) {
-                    return decodeNmsDetections(frameThreshold, targetClass);
+                YoloDecoding.Output output = this::outputValue;
+                List<YoloDecoding.Candidate> candidates = outputFormat == OutputFormat.NMS_DETECTIONS
+                        ? YoloDecoding.decodeNms(output, outputBoxCount, NUM_CLASSES, targetClass,
+                                frameThreshold, inputWidth, inputHeight, IOU_THRESH)
+                        : YoloDecoding.decodeRaw(output, outputBoxCount, NUM_CLASSES, targetClass,
+                                frameThreshold, inputWidth, inputHeight, IOU_THRESH);
+                for (YoloDecoding.Candidate candidate : candidates) {
+                    detections.add(new Detection(LABELS[candidate.classIndex], candidate.confidence,
+                            new RectF(candidate.left, candidate.top, candidate.right, candidate.bottom)));
                 }
-
-                for (int boxIndex = 0; boxIndex < outputBoxCount; boxIndex++) {
-                    int classIndex = targetClass;
-                    float score = 0f;
-                    if (classIndex >= 0) {
-                        score = outputValue(BOX_VALUES + classIndex, boxIndex);
-                    } else {
-                        for (int classOffset = 0; classOffset < NUM_CLASSES; classOffset++) {
-                            float candidate = outputValue(BOX_VALUES + classOffset, boxIndex);
-                            if (candidate > score) {
-                                score = candidate;
-                                classIndex = classOffset;
-                            }
-                        }
-                    }
-                    if (classIndex < 0 || score < frameThreshold) continue;
-
-                    float cx = toInputX(outputValue(0, boxIndex));
-                    float cy = toInputY(outputValue(1, boxIndex));
-                    float width = toInputX(outputValue(2, boxIndex));
-                    float height = toInputY(outputValue(3, boxIndex));
-                    if (width <= 1f || height <= 1f) continue;
-
-                    detections.add(new Detection(LABELS[classIndex], score,
-                            new RectF(cx - width / 2f, cy - height / 2f,
-                                    cx + width / 2f, cy + height / 2f)));
-                }
-                return applyNms(detections);
+                return detections;
             } catch (Exception exception) {
                 Log.e(TAG, "Detection error", exception);
                 return detections;
             }
         }
-    }
-
-    private List<Detection> decodeNmsDetections(float minimumConfidence, int targetClass) {
-        List<Detection> detections = new ArrayList<>();
-        for (int boxIndex = 0; boxIndex < outputBoxCount; boxIndex++) {
-            float confidence = outputValue(4, boxIndex);
-            int classIndex = Math.round(outputValue(5, boxIndex));
-            if (confidence < minimumConfidence || classIndex < 0 || classIndex >= NUM_CLASSES
-                    || (targetClass >= 0 && classIndex != targetClass)) {
-                continue;
-            }
-
-            float left = toInputX(outputValue(0, boxIndex));
-            float top = toInputY(outputValue(1, boxIndex));
-            float right = toInputX(outputValue(2, boxIndex));
-            float bottom = toInputY(outputValue(3, boxIndex));
-            if (right <= left || bottom <= top) continue;
-
-            detections.add(new Detection(LABELS[classIndex], confidence,
-                    new RectF(left, top, right, bottom)));
-        }
-        return applyNms(detections);
     }
 
     private void writeInput(Bitmap bitmap) {
@@ -283,9 +244,8 @@ public class TFLiteDetector {
     }
 
     private float outputValue(int valueIndex, int boxIndex) {
-        int flatIndex = channelsFirst
-                ? valueIndex * outputBoxCount + boxIndex
-                : boxIndex * outputValuesPerBox + valueIndex;
+        int flatIndex = YoloDecoding.flatIndex(
+                channelsFirst, valueIndex, boxIndex, outputBoxCount, outputValuesPerBox);
         if (outputDataType == DataType.FLOAT32) return outputBuffer.getFloat(flatIndex * 4);
         int raw = outputBuffer.get(flatIndex);
         if (outputDataType == DataType.UINT8) raw &= 0xFF;
@@ -298,6 +258,8 @@ public class TFLiteDetector {
      * label-mapping or confidence-filter problem.
      */
     private void logRawClassScoresPeriodically() {
+        // Off by default; enable with: adb shell setprop log.tag.<TAG> DEBUG
+        if (!Log.isLoggable(TAG, Log.DEBUG)) return;
         long now = SystemClock.elapsedRealtime();
         if (now - lastDiagnosticLogAt < 1000L) return;
         lastDiagnosticLogAt = now;
@@ -336,44 +298,6 @@ public class TFLiteDetector {
                     .append(topBoxIndex);
         }
         Log.d(TAG, report.toString());
-    }
-
-    private float toInputX(float value) {
-        return Math.abs(value) <= 2f ? value * inputWidth : value;
-    }
-
-    private float toInputY(float value) {
-        return Math.abs(value) <= 2f ? value * inputHeight : value;
-    }
-
-    private List<Detection> applyNms(List<Detection> detections) {
-        detections.sort((first, second) -> Float.compare(second.confidence, first.confidence));
-        List<Detection> result = new ArrayList<>();
-        boolean[] removed = new boolean[detections.size()];
-        for (int first = 0; first < detections.size(); first++) {
-            if (removed[first]) continue;
-            Detection strongest = detections.get(first);
-            result.add(strongest);
-            for (int second = first + 1; second < detections.size(); second++) {
-                if (!removed[second]
-                        && detections.get(second).label.equals(strongest.label)
-                        && iou(strongest.boundingBox, detections.get(second).boundingBox) > IOU_THRESH) {
-                    removed[second] = true;
-                }
-            }
-        }
-        return result;
-    }
-
-    private float iou(RectF first, RectF second) {
-        float left = Math.max(first.left, second.left);
-        float top = Math.max(first.top, second.top);
-        float right = Math.min(first.right, second.right);
-        float bottom = Math.min(first.bottom, second.bottom);
-        float intersection = Math.max(0f, right - left) * Math.max(0f, bottom - top);
-        float firstArea = Math.max(0f, first.width()) * Math.max(0f, first.height());
-        float secondArea = Math.max(0f, second.width()) * Math.max(0f, second.height());
-        return intersection / (firstArea + secondArea - intersection + 1e-6f);
     }
 
     private MappedByteBuffer loadModelFile(Context context, String fileName) throws IOException {

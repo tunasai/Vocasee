@@ -13,3 +13,5 @@
 .externalNativeBuild
 .cxx
 local.properties
+# Archived and experimental models (one is ~284 MB, over GitHub's 100 MB limit).
+/app/model_archive/
