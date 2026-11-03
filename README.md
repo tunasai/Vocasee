@@ -45,7 +45,7 @@ Say the name of an object, and VocaSee looks for it through the phone's camera. 
 
 ## Supported objects
 
-VocaSee recognizes **24 household objects**. They were chosen from the literature on frequently misplaced items and from interviews with eleven visually impaired residents of three barangays in San Pablo City, Laguna.
+VocaSee recognizes **24 household objects**.
 
 | | | | |
 |---|---|---|---|
@@ -160,21 +160,6 @@ VocaSee greatly reduced unnecessary contact with surrounding objects, including 
 - Camera and microphone permissions
 - iOS is not supported
 
-## Getting started
-
-<!-- TODO: confirm these steps against the actual repository layout -->
-
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/<your-username>/<repo-name>.git
-   ```
-2. Open the project in **Android Studio** (Panda 4 or later).
-3. Let Gradle sync, then connect an Android device (API 26+) with USB debugging enabled.
-4. Click **Run** to build and install the app.
-5. On first launch, allow camera and microphone access ("While using the app"), then follow the voice tutorial.
-
-<!-- TODO: add a link to a release APK if you publish one -->
-
 ## Limitations
 
 - Only the 24 supported object classes are detected, and only one object class is searched at a time.
@@ -190,12 +175,7 @@ VocaSee greatly reduced unnecessary contact with surrounding objects, including 
 - **Cyrelle Kristin P. Gapit**
 - **Francen P. Manalo**
 
-**Thesis adviser:** Prince Ross O. Andres, MSIT
-
 College of Computer Studies, Laguna State Polytechnic University – San Pablo City Campus
 
-### Acknowledgments
-
-Thanks to the visually impaired participants from Barangay San Cristobal, Barangay San Buenaventura, and Barangay Del Remedio in San Pablo City, Laguna, and to the IT/CS experts who evaluated the system.
 
 <!-- TODO: add a License section once you choose one (for example, MIT) -->
