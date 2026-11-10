@@ -190,12 +190,5 @@ VocaSee greatly reduced unnecessary contact with surrounding objects, including 
 - **Cyrelle Kristin P. Gapit**
 - **Francen P. Manalo**
 
-**Thesis adviser:** Prince Ross O. Andres, MSIT
-
-College of Computer Studies, Laguna State Polytechnic University – San Pablo City Campus
-
-### Acknowledgments
-
-Thanks to the visually impaired participants from Barangay San Cristobal, Barangay San Buenaventura, and Barangay Del Remedio in San Pablo City, Laguna, and to the IT/CS experts who evaluated the system.
 
 <!-- TODO: add a License section once you choose one (for example, MIT) -->
